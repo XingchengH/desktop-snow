@@ -13,6 +13,7 @@ files:
 mac:
   category: public.app-category.entertainment
   identity: '-'
+  hardenedRuntime: false
   artifactName: Desktop-Snow-${version}-mac-${arch}.${ext}
   target: zip
   extraResources:
