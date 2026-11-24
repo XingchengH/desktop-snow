@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>桌面雪景</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;overflow:hidden;font:14px system-ui;color:#effaff}
+canvas{display:block;width:100vw;height:100vh;touch-action:none}
+body.play canvas{background:linear-gradient(180deg,#10273bb0,transparent);border:1px solid #a2cad377;border-radius:17px}
+header{position:absolute;inset:0 0 auto;padding:12px;display:flex;align-items:center;gap:7px;-webkit-app-region:drag;background:#152b40eb;border-radius:16px 16px 0 0}
+header[hidden]{display:none}
+strong{margin-right:auto}
+button{-webkit-app-region:no-drag;border:1px solid #99bac0;border-radius:8px;background:#203a51;color:white;padding:5px 9px;cursor:pointer}
+button[aria-pressed=true]{background:#daeff8;color:#112d40}
+output{position:absolute;top:55px;left:14px;pointer-events:none;text-shadow:0 1px 4px #000}
+</style>
+<header hidden><strong>桌面雪景</strong><button id="shovel">雪铲</button><button id="roll">滚雪球</button><button id="reset">重来</button><button id="close" aria-label="关闭">×</button></header>
+<canvas aria-label="落雪场景"></canvas>
+<output hidden></output>
+<script src="snow.js"></script>
+</html>
