@@ -1,0 +1,49 @@
+name: Build desktop release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            platform: mac
+            arch: arm64
+          - os: macos-15
+            platform: mac
+            arch: x64
+          - os: windows-latest
+            platform: win
+            arch: x64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Compile macOS window tracker
+        if: matrix.platform == 'mac'
+        shell: bash
+        run: |
+          mkdir -p build
+          cpu=arm64
+          if [[ "${{ matrix.arch }}" == 'x64' ]]; then cpu=x86_64; fi
+          swiftc -O -target "${cpu}-apple-macos13.0" windows.swift -o build/desktop-snow-tracker
+      - name: Package
+        run: npx --no-install electron-builder --${{ matrix.platform }} --${{ matrix.arch }} --publish never
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-snow-${{ matrix.platform }}-${{ matrix.arch }}
+          path: |
+            dist/Desktop-Snow-*-mac-*.zip
+            dist/Desktop-Snow-*-windows-*.exe
+          if-no-files-found: error

@@ -3,6 +3,11 @@
   "version": "0.1.0",
   "private": true,
   "main": "main.cjs",
-  "scripts": { "start": "electron ." },
-  "devDependencies": { "electron": "^43.0.0" }
+  "scripts": {
+    "start": "electron ."
+  },
+  "devDependencies": {
+    "electron": "^43.0.0",
+    "electron-builder": "^26.18.0"
+  }
 }

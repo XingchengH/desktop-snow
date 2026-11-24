@@ -1,0 +1,23 @@
+appId: com.xingchengh.desktopsnow
+productName: Desktop Snow
+asar: false
+files:
+  - main.cjs
+  - preload.cjs
+  - launcher.html
+  - launcher.js
+  - snow.html
+  - snow.js
+  - windows.ps1
+  - package.json
+mac:
+  category: public.app-category.entertainment
+  identity: '-'
+  artifactName: Desktop-Snow-${version}-mac-${arch}.${ext}
+  target: zip
+  extraResources:
+    - from: build/desktop-snow-tracker
+      to: desktop-snow-tracker
+win:
+  artifactName: Desktop-Snow-${version}-windows-${arch}.${ext}
+  target: portable
