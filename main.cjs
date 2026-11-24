@@ -2,11 +2,14 @@ const { app, BrowserWindow, globalShortcut, ipcMain, screen, Tray, Menu, nativeI
 const { spawn } = require('node:child_process');
 const { createInterface } = require('node:readline');
 const path = require('node:path');
+const fs = require('node:fs');
 
 let snowfall, tracker, tray, launcher, eventTimer;
 let playing = false;
 let visible = true;
 let trackedWindows = [];
+let finderIcons = [];
+let finderTimer;
 let draggingSnow = false;
 let inputTimer;
 let capturesMouse = false;
@@ -24,7 +27,7 @@ function updateMouseCapture() {
   const center = bounds.x + bounds.width / 2;
   const toolbar = Math.abs(cursor.x - center) <= 350 &&
     cursor.y >= floor - 135 && cursor.y <= floor - 85;
-  const overWindow = trackedWindows.some(rect => cursor.x >= rect.x &&
+  const overWindow = [...trackedWindows, ...finderIcons].some(rect => cursor.x >= rect.x &&
     cursor.x < rect.x + rect.width && cursor.y >= rect.y && cursor.y < rect.y + rect.height);
   const snowbank = cursor.x >= workArea.x && cursor.x < workArea.x + workArea.width &&
     cursor.y >= floor - 62 && cursor.y < floor && !overWindow;
@@ -56,6 +59,7 @@ function sendWindowEdges() {
   snowfall.webContents.send('window-edges', [
     ...bars.map(bar => ({ ...bar, systemBar: true })),
     ...trackedWindows,
+    ...finderIcons,
   ].map(rect => ({ ...rect, x: rect.x - x, y: rect.y - y })));
 }
 
@@ -163,8 +167,30 @@ function trackWindows() {
   const mac = process.platform === 'darwin';
   if (!mac && process.platform !== 'win32') return;
   const macTracker = app.isPackaged ? path.join(process.resourcesPath, 'desktop-snow-tracker') : '/usr/bin/swift';
+  const finderPath = path.join(app.isPackaged ? process.resourcesPath : path.join(__dirname, 'build'), 'finder-icons.node');
+  let finderReader;
+  if (mac && (app.isPackaged || fs.existsSync(finderPath))) {
+    try {
+      finderReader = require(finderPath);
+      finderTimer = setInterval(() => {
+        if (!visible) return;
+        finderIcons = finderReader.read().map(rect => ({
+          ...rect, desktopItem: true, finderIcon: true, cornerRadius: 5,
+        }));
+        if (process.env.DESKTOP_SNOW_DEBUG === '1' && !trackWindows.loggedFinder) {
+          console.warn(`Finder (app process): trusted=${systemPreferences.isTrustedAccessibilityClient(false)}; icons=${finderIcons.length}`);
+          trackWindows.loggedFinder = true;
+        }
+      }, 750);
+    } catch (error) {
+      console.warn('Finder icon tracking:', error.message);
+    }
+  }
+  const trackerArgs = app.isPackaged
+    ? [String(process.pid)] : [path.join(__dirname, 'windows.swift'), String(process.pid)];
+  if (finderReader) trackerArgs.push('--windows-only');
   tracker = spawn(mac ? macTracker : 'powershell.exe', mac
-    ? (app.isPackaged ? [String(process.pid)] : [path.join(__dirname, 'windows.swift'), String(process.pid)])
+    ? trackerArgs
     : ['-NoProfile', '-NonInteractive', '-File', path.join(__dirname, 'windows.ps1'), String(process.pid)],
     { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
   tracker.on('error', error => console.warn('Window tracking:', error.message));
@@ -243,4 +269,5 @@ app.on('will-quit', () => {
   tracker?.kill();
   clearInterval(eventTimer);
   clearInterval(inputTimer);
+  clearInterval(finderTimer);
 });

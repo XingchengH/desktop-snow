@@ -39,10 +39,9 @@ jobs:
         if: matrix.platform == 'mac'
         shell: bash
         run: |
-          mkdir -p build
           cpu=arm64
           if [[ "${{ matrix.arch }}" == 'x64' ]]; then cpu=x86_64; fi
-          swiftc -O -target "${cpu}-apple-macos13.0" windows.swift -o build/desktop-snow-tracker
+          bash build-mac-tracker.sh "$cpu"
       - name: Package
         run: npx --no-install electron-builder --${{ matrix.platform }} --${{ matrix.arch }} --publish never
       - uses: actions/upload-artifact@v4

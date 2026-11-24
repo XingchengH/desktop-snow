@@ -3,6 +3,7 @@ import AppKit
 import Foundation
 
 let ownPID = Int(CommandLine.arguments[1])
+let windowsOnly = CommandLine.arguments.contains("--windows-only")
 let debugDesktop = ProcessInfo.processInfo.environment["DESKTOP_SNOW_DEBUG"] == "1"
 var loggedDesktop = false
 func axAttribute(_ element: AXUIElement, _ key: String) -> CFTypeRef? {
@@ -85,7 +86,7 @@ while true {
         return ["id": id, "x": surface.minX, "y": surface.minY,
                 "width": surface.width, "height": surface.height, "desktopItem": widget]
     }
-    if Date() >= nextIcons {
+    if !windowsOnly && Date() >= nextIcons {
         icons = desktopIcons()
         nextIcons = Date().addingTimeInterval(1)
     }

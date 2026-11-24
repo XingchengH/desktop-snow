@@ -19,6 +19,8 @@ mac:
   extraResources:
     - from: build/desktop-snow-tracker
       to: desktop-snow-tracker
+    - from: build/finder-icons.node
+      to: finder-icons.node
 win:
   artifactName: Desktop-Snow-${version}-windows-${arch}.${ext}
   target: portable
