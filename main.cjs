@@ -171,10 +171,10 @@ function trackWindows() {
   tracker.stderr.on('data', data => console.warn(String(data).trim()));
   createInterface({ input: tracker.stdout }).on('line', line => {
     try {
-      trackedWindows = JSON.parse(line).map(({ id, ...rect }) => {
+      trackedWindows = JSON.parse(line).map(({ id, desktopItem, finderIcon, ...rect }) => {
         const bounds = mac ? rect : screen.screenToDipRect(null, rect);
-        return { ...bounds, id,
-          cornerRadius: mac ? (rect.finderIcon ? 5 : rect.desktopItem ? 16 : 12) : 8 };
+        return { ...bounds, id, desktopItem, finderIcon,
+          cornerRadius: finderIcon ? 5 : mac ? (desktopItem ? 16 : 12) : 8 };
       });
       sendWindowEdges();
     } catch (error) {
