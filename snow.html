@@ -12,9 +12,9 @@ header[hidden]{display:none}
 strong{margin-right:auto}
 button{-webkit-app-region:no-drag;border:1px solid #99bac0;border-radius:8px;background:#203a51;color:white;padding:5px 9px;cursor:pointer}
 button[aria-pressed=true]{background:#daeff8;color:#112d40}
-#wardrobe{position:absolute;width:min(344px,calc(100vw - 16px));padding:12px;background:#142a40f5;border:1px solid #8bb4ca80;border-radius:14px;box-shadow:0 8px 30px #06152275}
+#wardrobe{position:absolute;max-height:calc(100vh - 16px);overflow:auto;width:min(344px,calc(100vw - 16px));padding:12px;background:#142a40f5;border:1px solid #8bb4ca80;border-radius:14px;box-shadow:0 8px 30px #06152275}
 #wardrobe-title{display:flex;align-items:center;justify-content:space-between;margin-bottom:9px}
-.outfit-row{display:flex;align-items:center;gap:5px;margin-top:6px}
+.outfit-row{display:flex;flex-wrap:wrap;align-items:center;gap:5px;margin-top:6px}
 .outfit-row span{width:38px;flex:none;color:#b9d8e9;font-size:12px}
 .outfit-row button{font-size:12px;padding:4px 6px}
 output{position:absolute;max-width:min(520px,calc(100vw - 16px));width:max-content;pointer-events:none;text-shadow:0 1px 4px #000}

@@ -32,10 +32,17 @@ let width, height, snow, flakes, balls = [], carried, pointer, tool;
 let frameTime;
 let lastDragPoint, movedSnow = 0;
 const outfits = {
-  hat: ['帽子', '无', '礼帽', '红绒帽', '蓝绒帽'],
-  scarf: ['围巾', '无', '莓红', '湖蓝', '浅紫'],
+  hat: ['帽子', '无', '礼帽', '红绒帽', '蓝绒帽', '圣诞帽', '耳罩'],
+  scarf: ['围巾', '无', '莓红', '湖蓝', '浅紫', '松绿', '金色'],
   arms: ['手臂', '无', '树枝', '连指手套'],
-  face: ['表情', '微笑', '开心', '惊讶'],
+  face: ['表情', '微笑', '开心', '惊讶', '眨眼'], nose: ['鼻子', '胡萝卜', '煤球', '红鼻子'],
+  buttons: ['纽扣', '无', '煤扣', '金扣', '彩扣'],
+};
+const treeDecorations = {
+  lighting: ['灯光', ['twinkle', '闪烁'], ['steady', '常亮'], ['off', '关灯']],
+  ornaments: ['挂饰', ['none', '无'], ['classic', '红金彩球'], ['frost', '冰晶'], ['candy', '糖果']],
+  garland: ['彩带', ['none', '无'], ['gold', '金色'], ['silver', '银色'], ['red', '红色']],
+  topper: ['树顶', ['star', '金星'], ['snowflake', '雪花'], ['bow', '蝴蝶结'], ['none', '无']],
 };
 const wardrobe = document.getElementById('wardrobe');
 let dressedSnowman;
@@ -51,6 +58,8 @@ const intensityOrder = Object.keys(snowfallDensity);
 let intensity = 'steady';
 const intensityControl = document.getElementById('intensity');
 let looseSnow = [];
+const meltwater = [];
+const puddles = [];
 let wind = 0, windTarget = 0, gustStart = 0, gustDuration = 0;
 let steadyWindDirection = 0;
 let nextGust = 12_000 + Math.random() * 16_000, nextWindLift = 0;
@@ -67,8 +76,8 @@ function saveScene() {
       ...Object.fromEntries(Object.keys(outfits).map(part => [part, ball[part] ?? 0])),
     }));
   const planted = trees.filter(tree => !tree.anchor && tree.plantedAt !== undefined)
-    .map(({ x, preferred, size, seed, lighting }) => ({
-      preferred: Number.isFinite(x) ? x / width : preferred, size, seed, lighting,
+    .map(({ x, preferred, size, seed, lighting, ornaments, garland, topper }) => ({
+      preferred: Number.isFinite(x) ? x / width : preferred, size, seed, lighting, ornaments, garland, topper,
     }));
   try { localStorage.setItem(sceneKey, JSON.stringify({ figures, planted })); }
   catch (error) { console.warn('Snow scene could not be saved:', error.message); }
@@ -204,9 +213,102 @@ function weatherEvent(event) {
   weatherMessage.hidden = false;
 }
 
-function melt(depth, dt) {
+function addPuddle(x, y, radius, edge) {
+  if (puddles.length >= 100) return;
+  const existing = puddles.find(pool => pool.edge === edge?.id && Math.abs(pool.x - (x - (edge?.x ?? 0))) < 9);
+  if (existing) {
+    existing.radius = Math.min(12, Math.hypot(existing.radius, radius));
+    existing.age *= 0.55;
+  } else {
+    puddles.push({ x: x - (edge?.x ?? 0), y, edge: edge?.id, radius, age: 0 });
+  }
+}
+
+function melt(depth, dt, edge) {
   for (let i = 0; i < depth.length; i++) {
-    depth[i] = Math.max(0, depth[i] - dt * (0.7 + 0.45 * Math.sin(i * 0.19) ** 2));
+    const melted = Math.min(depth[i], dt * (0.7 + 0.45 * Math.sin(i * 0.19) ** 2));
+    depth[i] -= melted;
+    if (Math.random() >= melted * (edge ? 0.32 : 0.075)) continue;
+    const offset = (i + 0.2 + Math.random() * 0.6) * cell;
+    const x = (edge?.x ?? 0) + offset;
+    if (x < 0 || x >= width) continue;
+    if (edge) {
+      if (offset >= edge.width || isCovered(edge, x) || meltwater.length >= 180) continue;
+      meltwater.push({ x, y: ledgeSurface(edge, x), vy: 12 + Math.random() * 22,
+        radius: 0.9 + Math.random() * 1.3, source: edge.id, offset,
+        attached: !edge.desktopItem && !edge.systemBar, age: 0 });
+    } else if (onGround(x)) {
+      addPuddle(x, groundTop(x) - depth[i], 2 + Math.random() * 3);
+    }
+  }
+}
+
+function drawMeltwater(dt) {
+  const byId = new Map(ledges.map(edge => [edge.id, edge]));
+  for (let i = meltwater.length - 1; i >= 0; i--) {
+    const drop = meltwater[i];
+    const source = byId.get(drop.source);
+    const previousY = drop.y;
+    drop.age += dt;
+    // Run down the glass before releasing from the bottom edge.
+    if (drop.attached && source && drop.offset < source.width) {
+      drop.x = source.x + drop.offset;
+      drop.slide = (drop.slide ?? -4) + drop.vy * dt;
+      drop.y = edgeTop(source, drop.x) + drop.slide;
+      drop.vy = Math.min(320, drop.vy + 300 * dt);
+      if (drop.y >= source.y + source.height) drop.attached = false;
+    } else {
+      drop.attached = false;
+      drop.vy += 590 * dt;
+      drop.x += wind * dt * 0.055;
+      drop.y += drop.vy * dt;
+    }
+    const landing = drop.attached ? undefined : findLanding(drop.x, previousY, drop.y, drop.source);
+    const ground = !drop.attached && onGround(drop.x) && drop.y >= groundTop(drop.x);
+    if (landing || ground) {
+      addPuddle(drop.x, landing ? ledgeSurface(landing, drop.x) : groundTop(drop.x),
+        drop.radius * 3, landing);
+    }
+    if (landing || ground || drop.y > height + 20 || drop.x < 0 || drop.x >= width || drop.age > 5) {
+      meltwater.splice(i, 1);
+      continue;
+    }
+    const trail = Math.min(17, 2 + drop.vy * 0.031);
+    ctx.save();
+    if (drop.attached) {
+      clipBehindWindows(source.covers, {
+        x: drop.x - 3, y: drop.y - trail, width: 6, height: trail + 3,
+      });
+    }
+    ctx.strokeStyle = '#92d6f0a8';
+    ctx.lineCap = 'round';
+    ctx.lineWidth = drop.radius;
+    ctx.beginPath();
+    ctx.moveTo(drop.x - (drop.attached ? 0 : wind * 0.003), drop.y - trail);
+    ctx.lineTo(drop.x, drop.y);
+    ctx.stroke();
+    circle(drop.x, drop.y, drop.radius, '#c4edffd9');
+    ctx.restore();
+  }
+  for (let i = puddles.length - 1; i >= 0; i--) {
+    const pool = puddles[i];
+    const edge = byId.get(pool.edge);
+    pool.age += dt;
+    if (pool.age >= 3.2 || (pool.edge !== undefined && !edge)) {
+      puddles.splice(i, 1);
+      continue;
+    }
+    const x = pool.x + (edge?.x ?? 0);
+    if (edge && (pool.x >= edge.width || isCovered(edge, x))) continue;
+    const y = edge ? ledgeSurface(edge, x) : pool.y;
+    const spread = pool.radius * (1 + Math.min(pool.age, 1) * 0.55);
+    ctx.save();
+    ctx.globalAlpha = (1 - pool.age / 3.2) * 0.72;
+    ctx.translate(x, y - 1);
+    ctx.scale(1, 0.19);
+    circle(0, 0, spread, '#5daecf');
+    circle(-spread * 0.19, -spread * 0.19, spread * 0.65, '#b9e7f4');
+    ctx.restore();
   }
 }
 
@@ -268,17 +370,8 @@ function buildTreeArtwork(seed) {
         speed: 0.6 + random() * 1.4, radius: 3.4 + random() * 2.2 });
     }
   }
-  brush.fillStyle = '#ffe1a1';
-  brush.beginPath();
-  for (let i = 0; i <= 10; i++) {
-    const angle = i * Math.PI / 5 - Math.PI / 2;
-    const r = i % 2 ? 2.7 : 6;
-    const x = Math.cos(angle) * r;
-    const y = -132 + Math.sin(angle) * r;
-    if (i) brush.lineTo(x, y);
-    else brush.moveTo(x, y);
-  }
-  brush.fill();
+  const ornaments = lights.filter((_, index) => index % 2 === 0)
+    .map(({ x, y }) => ({ x, y: y + 5 + random() * 3 }));
   const glow = document.createElement('canvas');
   glow.width = glow.height = 24;
   const lightBrush = glow.getContext('2d');
@@ -288,7 +381,19 @@ function buildTreeArtwork(seed) {
   halo.addColorStop(1, '#ffd18200');
   lightBrush.fillStyle = halo;
   lightBrush.fillRect(0, 0, 24, 24);
-  return { artwork, lights, glow };
+  return { artwork, lights, glow, ornaments };
+}
+
+function clipBehindWindows(covers, bounds) {
+  for (const rect of covers) {
+    if (rect.systemBar || rect.x >= bounds.x + bounds.width || rect.x + rect.width <= bounds.x ||
+        rect.y >= bounds.y + bounds.height || rect.y + rect.height <= bounds.y) continue;
+    // Intersect one exclusion at a time so overlapping windows stay opaque.
+    ctx.beginPath();
+    ctx.rect(0, 0, width, height);
+    ctx.rect(rect.x, rect.y, rect.width, rect.height);
+    ctx.clip('evenodd');
+  }
 }
 
 function drawTree(tree, now) {
@@ -297,11 +402,11 @@ function drawTree(tree, now) {
   if (tree.anchor) {
     if (!edge) return;
     tree.x = edge.x + tree.anchor.offset;
-    if (!fitsLedge(edge, tree.x, 55 * tree.size, 146 * tree.size)) return;
-  } else if (tree.x === undefined || now >= tree.checkAt) {
+    if (!fitsLedge(edge, tree.x, 55 * tree.size, 146 * tree.size, true)) return;
+  } else if (tree.x === undefined) {
     if (now < (tree.checkAt ?? 0)) return;
     tree.checkAt = now + 350;
-    if (tree.x === undefined || !clearTreeSpot(tree, tree.x)) tree.x = placeTree(tree);
+    tree.x = placeTree(tree);
     if (tree.x === undefined) return;
     if (tree.plantedAt === undefined) {
       tree.plantedAt = now;
@@ -317,10 +422,14 @@ function drawTree(tree, now) {
   tree.hit = { x: x - 43 * tree.size, y: y - 138 * tree.size * growth,
     width: 86 * tree.size, height: 138 * tree.size * growth };
   ctx.save();
+  clipBehindWindows(edge?.covers ?? ledges, {
+    x: x - 72 * tree.size, y: y - 143 * tree.size,
+    width: 144 * tree.size, height: 146 * tree.size,
+  });
   ctx.translate(x, y);
   ctx.scale(growth * tree.size, growth * tree.size);
   ctx.transform(1, 0, -wind / 2200, 1, 0, 0);
-  paintTree(tree.artwork ??= buildTreeArtwork(tree.seed), now, tree.lighting);
+  paintTree(tree.artwork ??= buildTreeArtwork(tree.seed), now, tree);
   ctx.restore();
 }
 
@@ -352,29 +461,91 @@ function updateTreeDrag(event) {
   treeDrag.drop = treeDrop(tree, treeDrag.x, treeDrag.y);
 }
 
-function drawTreeDrag() {
+function drawTreeDrag(now) {
   if (!treeDrag?.moved) return;
   const { tree, drop, x, y } = treeDrag;
   ctx.save();
   ctx.translate(drop?.x ?? x, drop?.y ?? y);
   ctx.scale(drop?.size ?? tree.size, drop?.size ?? tree.size);
   ctx.globalAlpha = drop ? 0.8 : 0.38;
-  ctx.drawImage((tree.artwork ??= buildTreeArtwork(tree.seed)).artwork, -56, -143, 112, 146);
+  paintTree(tree.artwork ??= buildTreeArtwork(tree.seed), now, tree);
   ctx.restore();
 }
 
-function paintTree({ artwork, lights, glow }, now, lighting) {
+function paintTree({ artwork, lights, glow, ornaments }, now, style = {}) {
+  const { lighting, ornaments: theme, garland, topper = 'star' } = style;
   ctx.drawImage(artwork, -56, -143, 112, 146);
+  if (garland && garland !== 'none') {
+    ctx.strokeStyle = { gold: '#e9bd60', silver: '#ddeffa', red: '#df6372' }[garland];
+    ctx.lineWidth = 1.8;
+    for (const [y, span] of [[-96, 12], [-72, 20], [-48, 28], [-25, 34]]) {
+      ctx.beginPath();
+      ctx.moveTo(-span, y - 3);
+      ctx.quadraticCurveTo(-span * 0.15, y + 10, span, y - 5);
+      ctx.stroke();
+    }
+  }
+  if (theme && theme !== 'none') {
+    ornaments.forEach(({ x, y }, index) => {
+      if (theme === 'frost') {
+        drawCrystal(x, y, 3.1);
+      } else {
+        const colors = theme === 'candy' ? ['#f087a6', '#8bdec2', '#f4bfdd'] : ['#c94e60', '#edc065', '#f5e0aa'];
+        ctx.fillStyle = '#f1d599';
+        ctx.fillRect(x - 0.8, y - 4, 1.6, 2);
+        circle(x, y, 2.9, colors[index % colors.length]);
+        circle(x - 0.9, y - 0.9, 0.85, '#ffffffb3');
+      }
+    });
+  }
+  if (topper === 'snowflake') drawCrystal(0, -132, 6.5);
+  if (topper === 'bow') {
+    ctx.fillStyle = '#e85a70';
+    ctx.beginPath();
+    ctx.moveTo(0, -132);
+    ctx.quadraticCurveTo(-9, -143, -8, -131);
+    ctx.quadraticCurveTo(-7, -126, 0, -132);
+    ctx.quadraticCurveTo(9, -143, 8, -131);
+    ctx.quadraticCurveTo(7, -126, 0, -132);
+    ctx.fill();
+    circle(0, -132, 1.9, '#ffacaa');
+  }
+  if (topper === 'star') {
+    ctx.fillStyle = '#ffe1a1';
+    ctx.beginPath();
+    for (let i = 0; i < 10; i++) {
+      const angle = i * Math.PI / 5 - Math.PI / 2;
+      const r = i % 2 ? 2.7 : 6;
+      if (i) ctx.lineTo(Math.cos(angle) * r, -132 + Math.sin(angle) * r);
+      else ctx.moveTo(0, -138);
+    }
+    ctx.closePath();
+    ctx.fill();
+  }
   if (lighting === 'off') return;
+  const opacity = ctx.globalAlpha;
   for (const light of lights) {
     const brightness = reducedMotion.matches || lighting === 'steady' ? 0.78
       : 0.68 + 0.26 * Math.sin(now / 1000 * light.speed + light.phase);
-    ctx.globalAlpha = brightness;
+    ctx.globalAlpha = opacity * brightness;
     const { x, y, radius } = light;
     ctx.drawImage(glow, x - radius, y - radius, radius * 2, radius * 2);
     circle(x, y, 1.1, light.color);
   }
-  ctx.globalAlpha = 1;
+  ctx.globalAlpha = opacity;
+}
+
+function drawCrystal(x, y, radius) {
+  ctx.strokeStyle = '#d2f3ff';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  for (let i = 0; i < 3; i++) {
+    const dx = Math.cos(i * Math.PI / 3) * radius;
+    const dy = Math.sin(i * Math.PI / 3) * radius;
+    ctx.moveTo(x - dx, y - dy);
+    ctx.lineTo(x + dx, y + dy);
+  }
+  ctx.stroke();
 }
 
 function deposit(depth, index, mass, offset, limit) {
@@ -473,12 +644,12 @@ function anchoredEdge(anchor) {
   return ledges.find(edge => edge.id === anchor.id);
 }
 
-function fitsLedge(edge, x, radius, objectHeight) {
+function fitsLedge(edge, x, radius, objectHeight, ignoreOcclusion = false) {
   const y = ledgeSurface(edge, x);
   return x - radius >= Math.max(0, edge.x + 6) &&
     x + radius <= Math.min(width, edge.x + edge.width - 6) && y - objectHeight >= 0 &&
-    !edge.covers.some(rect => rect.x < x + radius && rect.x + rect.width > x - radius &&
-      rect.y < edge.y && rect.y + rect.height > y - objectHeight);
+    (ignoreOcclusion || !edge.covers.some(rect => rect.x < x + radius && rect.x + rect.width > x - radius &&
+      rect.y < edge.y && rect.y + rect.height > y - objectHeight));
 }
 
 function ledgeTreeSize(edge, x, preferred = 0.62) {
@@ -524,14 +695,14 @@ function updateAnchoredBalls() {
     if (!ball.anchor) continue;
     const edge = anchoredEdge(ball.anchor);
     ball.x = edge ? edge.x + ball.anchor.offset : ball.x;
-    ball.hidden = !edge || !fitsLedge(edge, ball.x, ball.r, ball.r * 2);
+    ball.hidden = !edge || !fitsLedge(edge, ball.x, ball.r, ball.r * 2, true);
     if (!ball.hidden) ball.y = ledgeSurface(edge, ball.x) - ball.r;
   }
   for (const ball of balls) {
     if (!ball.base?.anchor) continue;
     const edge = anchoredEdge(ball.base.anchor);
     ball.hidden = ball.base.hidden || !edge ||
-      !fitsLedge(edge, ball.base.x, ball.r, 2 * (ball.r + ball.base.r));
+      !fitsLedge(edge, ball.base.x, ball.r, 2 * (ball.r + ball.base.r), true);
     if (!ball.hidden) {
       ball.x = ball.base.x;
       ball.y = ball.base.y - ball.base.r - ball.r + 2;
@@ -688,7 +859,7 @@ function draw(now) {
   requestAnimationFrame(draw);
   if (document.hidden) return;
   // A little tolerance avoids dropping every third 60 Hz frame near the limit.
-  const quiet = !play && intensity === 'paused' && !looseSnow.length && now >= warmingUntil;
+  const quiet = !play && intensity === 'paused' && !looseSnow.length && !meltwater.length && !puddles.length && now >= warmingUntil;
   if (!play && frameTime !== undefined && now - frameTime < (quiet ? 120 : 46)) return;
   const dt = Math.min((now - (frameTime ?? now)) / 1000, quiet ? 0.13 : 0.075);
   frameTime = now;
@@ -726,7 +897,7 @@ function draw(now) {
   settle(snow, dt);
   {
     for (const edge of ledges) {
-      if (warming) melt(edge.depth, dt);
+      if (warming && edge.id !== -1) melt(edge.depth, dt, edge);
       settle(edge.depth, dt);
       if (edge.id !== -1) drawEdgeSnow(edge);
     }
@@ -748,11 +919,24 @@ function draw(now) {
     ctx.closePath();
     ctx.fillStyle = '#e8f4fc';
     ctx.fill();
+    if (meltwater.length || puddles.length) drawMeltwater(dt);
     for (const tree of trees) drawTree(tree, now);
-    drawTreeDrag();
+    drawTreeDrag(now);
     if (play) syncDecorationTargets();
     updateAnchoredBalls();
-    for (const ball of balls.concat(carried ?? [])) if (!ball.hidden) drawBall(ball);
+    for (const ball of balls) {
+      if (ball.hidden) continue;
+      const anchor = ball.anchor ?? ball.base?.anchor;
+      const edge = anchor && anchoredEdge(anchor);
+      const r = ball.r * 2.5;
+      ctx.save();
+      clipBehindWindows(edge?.covers ?? ledges, {
+        x: ball.x - r, y: ball.y - r, width: r * 2, height: r * 2,
+      });
+      drawBall(ball);
+      ctx.restore();
+    }
+    if (carried) drawBall(carried);
     drawPlacementPreview();
   }
 }
@@ -812,14 +996,24 @@ function drawBall(ball) {
   const dot = Math.max(1.4, r * 0.105);
   const face = ball.face ?? 0;
   const eyeY = y - r * 0.15;
-  circle(x - r * 0.25, eyeY, dot, '#293847');
+  if (face === 3) {
+    ctx.fillStyle = '#293847';
+    ctx.fillRect(x - r * 0.4, eyeY, r * 0.29, dot * 0.8);
+  } else {
+    circle(x - r * 0.25, eyeY, dot, '#293847');
+  }
   circle(x + r * 0.25, eyeY, dot, '#293847');
-  ctx.fillStyle = '#ed994d';
-  ctx.beginPath();
-  ctx.moveTo(x - dot, y + dot);
-  ctx.lineTo(x + r * 0.48, y + r * 0.17);
-  ctx.lineTo(x - dot, y + dot * 3);
-  ctx.fill();
+  if (ball.nose) {
+    circle(x, y + r * 0.17, dot * 1.55, ball.nose === 1 ? '#324354' : '#d75b6b');
+    circle(x - dot * 0.45, y + r * 0.17 - dot * 0.55, dot * 0.42, '#ffffff9c');
+  } else {
+    ctx.fillStyle = '#ed994d';
+    ctx.beginPath();
+    ctx.moveTo(x - dot, y + dot);
+    ctx.lineTo(x + r * 0.48, y + r * 0.17);
+    ctx.lineTo(x - dot, y + dot * 3);
+    ctx.fill();
+  }
   if (face !== 2) {
     ctx.strokeStyle = '#40556a';
     ctx.lineWidth = dot * 0.75;
@@ -831,7 +1025,7 @@ function drawBall(ball) {
     circle(x, y + r * 0.48, dot * 1.3, '#40556a');
   }
   if (ball.scarf) {
-    const color = ['','#bb4d55','#3c778e','#9b64b0'][ball.scarf];
+    const color = ['','#bb4d55','#3c778e','#9b64b0','#408269','#ba872b'][ball.scarf];
     ctx.strokeStyle = color;
     ctx.lineWidth = Math.max(4, r * 0.28);
     ctx.beginPath();
@@ -856,6 +1050,26 @@ function drawBall(ball) {
     ctx.fillStyle = '#e6edf4';
     ctx.fillRect(x - r * 0.85, hatY - r * 0.12, r * 1.7, r * 0.21);
     circle(x, hatY - r * 0.7, r * 0.17, '#f6fafc');
+  } else if (ball.hat === 4) {
+    ctx.fillStyle = '#c34459';
+    ctx.beginPath();
+    ctx.moveTo(x - r * 0.78, hatY);
+    ctx.quadraticCurveTo(x - r * 0.22, hatY - r * 1.65, x + r * 0.89, hatY - r * 0.85);
+    ctx.lineTo(x + r * 0.53, hatY);
+    ctx.fill();
+    ctx.fillStyle = '#f6fafc';
+    ctx.fillRect(x - r * 0.84, hatY - r * 0.13, r * 1.47, r * 0.24);
+    circle(x + r * 0.89, hatY - r * 0.85, r * 0.2, '#f6fafc');
+  } else if (ball.hat === 5) {
+    ctx.strokeStyle = '#744c83';
+    ctx.lineWidth = r * 0.14;
+    ctx.beginPath();
+    ctx.ellipse(x, y - r * 0.25, r * 0.89, r * 0.77, 0, Math.PI, 2 * Math.PI);
+    ctx.stroke();
+    for (const side of [-1, 1]) {
+      circle(x + side * r * 0.84, y - r * 0.25, r * 0.25, '#9964a7');
+      circle(x + side * r * 0.84, y - r * 0.29, r * 0.13, '#dbaddf');
+    }
   }
 }
 
@@ -879,26 +1093,17 @@ function drawOutfit({ x, y, r }, head) {
       }
     }
   }
-  if (head.coat) {
-    const colors = ['#ae4c57', '#416b8f', '#597e68'];
-    ctx.fillStyle = colors[head.coat - 1];
-    ctx.beginPath();
-    ctx.moveTo(x - r * 0.46, y - r * 0.76);
-    ctx.bezierCurveTo(x - r, y - r * 0.25, x - r * 1.04, y + r * 0.64, x - r * 0.58, y + r * 0.75);
-    ctx.quadraticCurveTo(x, y + r * 0.98, x + r * 0.58, y + r * 0.75);
-    ctx.bezierCurveTo(x + r * 1.04, y + r * 0.64, x + r, y - r * 0.25, x + r * 0.46, y - r * 0.76);
-    ctx.closePath();
-    ctx.fill();
-    ctx.clip();
-    ctx.strokeStyle = '#f4e8dc55';
-    ctx.lineWidth = Math.max(1, r * 0.045);
-    for (const offset of [-0.38, 0.03, 0.43]) {
-      ctx.beginPath();
-      ctx.moveTo(x - r, y + r * offset);
-      ctx.quadraticCurveTo(x, y + r * (offset + 0.16), x + r, y + r * offset);
-      ctx.stroke();
+  if (head.buttons) {
+    const colors = [
+      ['#354556', '#354556', '#354556'],
+      ['#bc842b', '#bc842b', '#bc842b'],
+      ['#c95364', '#39927f', '#6979b6'],
+    ][head.buttons - 1];
+    for (const [index, offset] of [-0.37, 0.04, 0.45].entries()) {
+      const buttonY = y + r * offset;
+      circle(x, buttonY, r * 0.115, colors[index]);
+      circle(x - r * 0.026, buttonY - r * 0.034, r * 0.035, '#ffffff96');
     }
-    for (const offset of [-0.35, 0.08, 0.5]) circle(x, y + r * offset, r * 0.071, '#eddec5');
   }
   ctx.restore();
 }
@@ -929,6 +1134,29 @@ function closeWardrobe() {
   syncDecorationTargets();
 }
 
+function decorationRow(item, part, label, choices) {
+  const row = document.createElement('div');
+  row.className = 'outfit-row';
+  const title = document.createElement('span');
+  title.textContent = label;
+  row.append(title);
+  for (const [value, choice] of choices) {
+    const button = document.createElement('button');
+    button.textContent = choice;
+    button.setAttribute('aria-label', `${label}：${choice}`);
+    button.setAttribute('aria-pressed', String((item[part] ?? choices[0][0]) === value));
+    button.onclick = () => {
+      item[part] = value;
+      saveScene();
+      for (const peer of row.querySelectorAll('button')) {
+        peer.setAttribute('aria-pressed', String(peer === button));
+      }
+    };
+    row.append(button);
+  }
+  return row;
+}
+
 function openWardrobe(ball) {
   dressedSnowman = ball;
   document.querySelector('#wardrobe-title strong').textContent = '雪人换装';
@@ -936,26 +1164,7 @@ function openWardrobe(ball) {
   const options = document.getElementById('outfits');
   options.replaceChildren();
   for (const [part, [label, ...choices]] of Object.entries(outfits)) {
-    const row = document.createElement('div');
-    row.className = 'outfit-row';
-    const title = document.createElement('span');
-    title.textContent = label;
-    row.append(title);
-    choices.forEach((choice, index) => {
-      const button = document.createElement('button');
-      button.textContent = choice;
-      button.setAttribute('aria-label', `${label}：${choice}`);
-      button.setAttribute('aria-pressed', String((ball[part] ?? 0) === index));
-      button.onclick = () => {
-        ball[part] = index;
-        saveScene();
-        for (const peer of row.querySelectorAll('button')) {
-          peer.setAttribute('aria-pressed', String(peer === button));
-        }
-      };
-      row.append(button);
-    });
-    options.append(row);
+    options.append(decorationRow(ball, part, label, choices.map((choice, index) => [index, choice])));
   }
   const actions = document.createElement('div');
   actions.className = 'outfit-row';
@@ -975,21 +1184,17 @@ function openWardrobe(ball) {
   syncDecorationTargets();
 }
 
-function openTreeLights(tree) {
+function openTreeDecorations(tree) {
   dressedSnowman = undefined;
-  document.querySelector('#wardrobe-title strong').textContent = '圣诞树灯饰';
-  wardrobe.setAttribute('aria-label', '圣诞树灯饰');
+  document.querySelector('#wardrobe-title strong').textContent = '装饰圣诞树';
+  wardrobe.setAttribute('aria-label', '装饰圣诞树');
   const options = document.getElementById('outfits');
   options.replaceChildren();
+  for (const [part, [title, ...choices]] of Object.entries(treeDecorations)) {
+    options.append(decorationRow(tree, part, title, choices));
+  }
   const row = document.createElement('div');
   row.className = 'outfit-row';
-  for (const [value, label] of [['twinkle', '微光闪烁'], ['steady', '常亮'], ['off', '关灯']]) {
-    const button = document.createElement('button');
-    button.textContent = label;
-    button.setAttribute('aria-pressed', String((tree.lighting ?? 'twinkle') === value));
-    button.onclick = () => { tree.lighting = value; saveScene(); openTreeLights(tree); };
-    row.append(button);
-  }
   const remove = document.createElement('button');
   const moveHint = document.createElement('span');
   moveHint.textContent = '拖动树可移动';
@@ -1134,6 +1339,7 @@ function select(next) {
     balls = [];
     closeWardrobe();
     looseSnow = [];
+    meltwater.length = puddles.length = 0;
     warmingUntil = 0;
     weatherMessageUntil = 0;
     trees = [];
@@ -1236,7 +1442,7 @@ function select(next) {
       pointer = undefined;
       window.desktopSnow?.setDragging(false);
       if (!released) return;
-      if (!moved && tree.hit) openTreeLights(tree);
+      if (!moved && tree.hit) openTreeDecorations(tree);
       if (moved && drop) {
         tree.x = drop.x;
         tree.preferred = drop.x / width;
@@ -1307,27 +1513,33 @@ if (new URLSearchParams(location.search).has('demo')) {
     ctx.scale(scale, scale);
     ctx.fillStyle = '#eef6ff';
     ctx.font = '24px system-ui';
-    ctx.fillText('雪人纹理与圣诞树灯光', 48, 48);
+    ctx.fillText('雪人和圣诞树装饰', 48, 48);
     ctx.fillStyle = '#b8d2e2';
     ctx.font = '13px system-ui';
-    ctx.fillText('同一套实时渲染 · 灯光会缓慢明暗变化', 49, 73);
+    ctx.fillText('彩球、冰晶与彩带 · 点击桌面上的装饰可更换', 49, 73);
     ctx.fillStyle = '#b6d3e3';
     ctx.beginPath();
     ctx.ellipse(320, 254, 275, 16, 0, 0, Math.PI * 2);
     ctx.fill();
     drawBall({ x: 137, y: 215, r: 39 });
-    drawBall({ x: 137, y: 155, r: 24, stacked: true, hat: 1, scarf: 1, face: 1 });
+    drawOutfit({ x: 137, y: 215, r: 39 }, { arms: 2, buttons: 3 });
+    drawBall({ x: 137, y: 155, r: 24, stacked: true, hat: 4, scarf: 4, face: 3, nose: 2 });
     for (const [index, size] of [0.83, 1.18, 0.96].entries()) {
       const x = 285 + index * 126;
       ctx.save();
       ctx.translate(x, 253);
       ctx.scale(size, size);
-      paintTree(previewTrees[index], now);
+      paintTree(previewTrees[index], now, previewStyles[index]);
       ctx.restore();
     }
     ctx.restore();
     requestAnimationFrame(preview);
   }
+  const previewStyles = [
+    { ornaments: 'classic', garland: 'gold' },
+    { ornaments: 'frost', garland: 'silver', topper: 'snowflake' },
+    { ornaments: 'candy', garland: 'red', topper: 'bow' },
+  ];
   const previewTrees = [42, 6821, 247251].map(buildTreeArtwork);
   requestAnimationFrame(preview);
 } else requestAnimationFrame(draw);
