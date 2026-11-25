@@ -3,6 +3,7 @@ productName: Desktop Snow
 asar: false
 files:
   - main.cjs
+  - updates.cjs
   - preload.cjs
   - launcher.html
   - launcher.js

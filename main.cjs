@@ -1,10 +1,15 @@
-const { app, BrowserWindow, globalShortcut, ipcMain, screen, Tray, Menu, nativeImage, powerMonitor, systemPreferences } = require('electron');
+const { app, BrowserWindow, globalShortcut, ipcMain, screen, Tray, Menu, nativeImage, powerMonitor, systemPreferences, dialog, net, shell } = require('electron');
 const { spawn } = require('node:child_process');
 const { createInterface } = require('node:readline');
 const path = require('node:path');
 const fs = require('node:fs');
+const { createUpdateChecker } = require('./updates.cjs');
+const checkForUpdates = createUpdateChecker({ app, dialog, net, shell });
 
-let snowfall, tracker, tray, launcher, eventTimer;
+let tracker, tray, eventTimer;
+const scenes = new Map();
+let displayChoice = 'primary';
+let activeScene;
 let playing = false;
 let visible = true;
 let trackedWindows = [];
@@ -13,15 +18,35 @@ let finderTimer;
 let draggingSnow = false;
 let inputTimer;
 let capturesMouse = false;
-let decorationTargets = [];
+
+function selectedDisplays() {
+  const displays = screen.getAllDisplays();
+  if (displayChoice === 'all') return displays;
+  return [displays.find(display => String(display.id) === displayChoice) ?? screen.getPrimaryDisplay()];
+}
+
+function preferencePath() {
+  return path.join(app.getPath('userData'), 'display.json');
+}
+
+function chooseDisplay(value) {
+  displayChoice = value;
+  try {
+    fs.writeFileSync(preferencePath(), JSON.stringify({ display: value }));
+  } catch (error) {
+    console.warn('Display preference:', error.message);
+  }
+  reconcileDisplays();
+}
 
 function snowFloor(display) {
   return display.workArea.y + display.workArea.height;
 }
 
 function updateMouseCapture() {
+  if (!activeScene) return;
+  const { display, snowfall, decorationTargets } = activeScene;
   const cursor = screen.getCursorScreenPoint();
-  const display = screen.getPrimaryDisplay();
   const { bounds, workArea } = display;
   const floor = snowFloor(display);
   const center = bounds.x + bounds.width / 2;
@@ -32,8 +57,12 @@ function updateMouseCapture() {
   const snowbank = cursor.x >= workArea.x && cursor.x < workArea.x + workArea.width &&
     cursor.y >= floor - 62 && cursor.y < floor && !overWindow;
   const overlay = snowfall.getBounds();
-  const decoration = !overWindow && decorationTargets.some(({ x, y, radius }) =>
-    Math.hypot(cursor.x - overlay.x - x, cursor.y - overlay.y - y) <= radius);
+  const decoration = decorationTargets.some(({ x, y, radius, width, height }) => {
+    const dx = cursor.x - overlay.x - x;
+    const dy = cursor.y - overlay.y - y;
+    return radius ? !overWindow && Math.hypot(dx, dy) <= radius
+      : dx >= 0 && dy >= 0 && dx < width && dy < height;
+  });
   const capture = playing && (draggingSnow || toolbar || snowbank || decoration);
   if (capture !== capturesMouse) {
     capturesMouse = capture;
@@ -41,9 +70,10 @@ function updateMouseCapture() {
   }
 }
 
-function sendWindowEdges() {
-  const { x, y } = snowfall.getBounds();
-  const display = screen.getPrimaryDisplay();
+function sendSceneEdges({ snowfall, display, ready }) {
+  if (!ready) return;
+  const overlay = snowfall.getBounds();
+  const { x, y } = overlay;
   const { bounds, workArea } = display;
   const bottom = snowFloor(display);
   const left = workArea.x - bounds.x;
@@ -60,10 +90,26 @@ function sendWindowEdges() {
     ...bars.map(bar => ({ ...bar, systemBar: true })),
     ...trackedWindows,
     ...finderIcons,
-  ].map(rect => ({ ...rect, x: rect.x - x, y: rect.y - y })));
+  ].filter(rect => rect.x < x + overlay.width && rect.x + rect.width > x &&
+    rect.y < y + overlay.height && rect.y + rect.height > y)
+    .map(rect => ({ ...rect, x: rect.x - x, y: rect.y - y })));
 }
 
-function setPlaying(next) {
+function sendWindowEdges() {
+  for (const scene of scenes.values()) sendSceneEdges(scene);
+}
+
+function sendWeather(event) {
+  for (const { snowfall, ready } of scenes.values()) {
+    if (ready) snowfall.webContents.send('weather-event', event);
+  }
+}
+
+function setPlaying(next, scene = activeScene) {
+  if (!scene || !scene.ready) return;
+  if (activeScene && activeScene !== scene) setPlaying(false, activeScene);
+  activeScene = scene;
+  const { snowfall, launcher } = scene;
   playing = next && visible;
   if (!playing) draggingSnow = false;
   updateMouseCapture();
@@ -76,35 +122,39 @@ function setPlaying(next) {
     launcher?.moveTop();
   }
   snowfall.webContents.send('play-mode', playing);
+  if (!playing) activeScene = undefined;
   updateMenu();
 }
 
 function toggleSnow() {
   visible = !visible;
   setPlaying(false);
-  if (visible) snowfall.showInactive();
-  else snowfall.hide();
+  for (const { snowfall, ready } of scenes.values()) {
+    if (visible && ready) snowfall.showInactive();
+    else snowfall.hide();
+  }
 }
 
-function startPlaying() {
+function startPlaying(scene) {
   if (!visible) toggleSnow();
-  setPlaying(true);
+  const nearest = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
+  setPlaying(true, scene ?? scenes.get(nearest.id) ?? scenes.values().next().value);
 }
 
-function launcherPosition() {
-  const display = screen.getPrimaryDisplay();
+function launcherPosition(display) {
   return { x: display.workArea.x + 14, y: snowFloor(display) - 60 };
 }
 
-function createLauncher() {
-  launcher = new BrowserWindow({
-    ...launcherPosition(), width: 112, height: 38, transparent: true, frame: false,
+function createLauncher(scene) {
+  const launcher = new BrowserWindow({
+    ...launcherPosition(scene.display), width: 112, height: 38, transparent: true, frame: false,
     show: false, alwaysOnTop: true, skipTaskbar: true, resizable: false,
     focusable: false, acceptFirstMouse: true, hasShadow: false,
     webPreferences: { preload: path.join(__dirname, 'preload.cjs') },
   });
-  launcher.once('ready-to-show', () => { if (!playing) launcher.showInactive(); });
+  launcher.once('ready-to-show', () => { if (activeScene !== scene) launcher.showInactive(); });
   launcher.loadFile('launcher.html');
+  return launcher;
 }
 
 function startWeatherEvents() {
@@ -117,13 +167,29 @@ function startWeatherEvents() {
     if (!visible) return;
     if (idle >= 90 && !treeGrownThisBreak) {
       treeGrownThisBreak = true;
-      snowfall.webContents.send('weather-event', 'tree');
+      sendWeather('tree');
     }
     if (Date.now() >= warmAt) {
       warmAt = nextWarmSpell();
-      snowfall.webContents.send('weather-event', 'warm');
+      sendWeather('warm');
     }
   }, 1000);
+}
+
+function displayMenu() {
+  const primaryId = screen.getPrimaryDisplay().id;
+  return {
+    label: '显示器',
+    submenu: [
+      { label: '所有显示器', type: 'radio', checked: displayChoice === 'all', click: () => chooseDisplay('all') },
+      { label: '跟随主显示器', type: 'radio', checked: displayChoice === 'primary', click: () => chooseDisplay('primary') },
+      ...screen.getAllDisplays().map((display, index) => ({
+        label: `${index + 1}. ${display.label || '显示器'}${display.id === primaryId ? '（主）' : ''}`,
+        type: 'radio', checked: displayChoice === String(display.id),
+        click: () => chooseDisplay(String(display.id)),
+      })),
+    ],
+  };
 }
 
 function updateMenu() {
@@ -132,15 +198,27 @@ function updateMenu() {
       if (playing) setPlaying(false);
       else startPlaying();
     } },
-    { label: '试试回暖', enabled: visible, click: () => snowfall.webContents.send('weather-event', 'warm') },
-    { label: '种一棵圣诞树', enabled: visible, click: () => snowfall.webContents.send('weather-event', 'tree') },
+    displayMenu(),
+    { label: '试试回暖', enabled: visible, click: () => sendWeather('warm') },
+    { label: '种一棵圣诞树', enabled: visible, click: () => sendWeather('tree') },
     ...(process.platform === 'darwin' ? [{
       label: '允许桌面图标积雪',
       click: () => systemPreferences.isTrustedAccessibilityClient(true),
     }] : []),
     { label: visible ? '隐藏雪景' : '显示雪景', click: toggleSnow },
+    { label: '检查更新…', click: checkForUpdates },
     { type: 'separator' },
     { label: '退出桌面雪景', click: () => app.quit() },
+  ]));
+  Menu.setApplicationMenu(Menu.buildFromTemplate([
+    ...(process.platform === 'darwin' ? [{ role: 'appMenu' }] : []),
+    { label: '玩雪', submenu: [
+      { label: '开始玩雪', click: () => startPlaying() },
+      { label: '退出玩雪', click: () => setPlaying(false) },
+      { label: '显示或隐藏雪景', click: toggleSnow },
+      { label: '检查更新…', click: checkForUpdates },
+      displayMenu(),
+    ] },
   ]));
 }
 
@@ -209,59 +287,89 @@ function trackWindows() {
   });
 }
 
-app.whenReady().then(() => {
-  snowfall = new BrowserWindow({
-    ...screen.getPrimaryDisplay().bounds,
+function createScene(display) {
+  const snowfall = new BrowserWindow({
+    ...display.bounds,
     transparent: true, frame: false, show: false, skipTaskbar: true,
     focusable: false, resizable: false, hasShadow: false, alwaysOnTop: true,
     webPreferences: { preload: path.join(__dirname, 'preload.cjs') },
   });
+  const scene = { display, snowfall, ready: false, decorationTargets: [] };
+  scenes.set(display.id, scene);
   snowfall.setIgnoreMouseEvents(true);
-  snowfall.on('blur', () => { if (playing) setPlaying(false); });
+  snowfall.on('blur', () => { if (activeScene === scene && playing) setPlaying(false); });
   snowfall.webContents.on('before-input-event', (_, input) => {
-    if (input.key === 'Escape' && playing) setPlaying(false);
+    if (input.key === 'Escape' && activeScene === scene && playing) setPlaying(false);
   });
+  snowfall.once('ready-to-show', () => {
+    scene.ready = true;
+    if (visible) snowfall.showInactive();
+    sendSceneEdges(scene);
+  });
+  snowfall.loadFile('snow.html');
+  scene.launcher = createLauncher(scene);
+  return scene;
+}
+
+function reconcileDisplays() {
+  const selected = selectedDisplays();
+  const ids = new Set(selected.map(display => display.id));
+  for (const display of selected) {
+    const scene = scenes.get(display.id);
+    if (!scene) {
+      createScene(display);
+      continue;
+    }
+    scene.display = display;
+    scene.snowfall.setBounds(display.bounds);
+    const { x, y } = launcherPosition(display);
+    scene.launcher.setPosition(x, y);
+  }
+  for (const [id, scene] of scenes) {
+    if (ids.has(id)) continue;
+    if (activeScene === scene) setPlaying(false);
+    scenes.delete(id);
+    scene.snowfall.destroy();
+    scene.launcher.destroy();
+  }
+  sendWindowEdges();
+  updateMenu();
+}
+
+app.whenReady().then(() => {
+  try {
+    const { display } = JSON.parse(fs.readFileSync(preferencePath(), 'utf8'));
+    if (typeof display === 'string' && /^(primary|all|-?\d+)$/.test(display)) displayChoice = display;
+  } catch (error) {
+    if (error.code !== 'ENOENT') console.warn('Display preference:', error.message);
+  }
   ipcMain.on('leave-play-mode', event => {
-    if (event.sender === snowfall.webContents) setPlaying(false);
+    if (event.sender === activeScene?.snowfall.webContents) setPlaying(false);
   });
   ipcMain.on('enter-play-mode', event => {
-    if (event.sender === launcher?.webContents) startPlaying();
+    const scene = Array.from(scenes.values()).find(entry => event.sender === entry.launcher.webContents);
+    if (scene) startPlaying(scene);
   });
   ipcMain.on('snow-drag', (event, dragging) => {
-    if (event.sender !== snowfall.webContents) return;
+    if (event.sender !== activeScene?.snowfall.webContents) return;
     draggingSnow = playing && dragging === true;
     updateMouseCapture();
   });
   ipcMain.on('decoration-targets', (event, targets) => {
-    if (event.sender !== snowfall.webContents || !Array.isArray(targets)) return;
-    decorationTargets = targets.slice(0, 60);
-    updateMouseCapture();
+    const scene = Array.from(scenes.values()).find(entry => event.sender === entry.snowfall.webContents);
+    if (!scene || !Array.isArray(targets)) return;
+    scene.decorationTargets = targets.slice(0, 60);
+    if (activeScene === scene) updateMouseCapture();
   });
-  snowfall.once('ready-to-show', () => {
-    if (visible) snowfall.showInactive();
-    sendWindowEdges();
-    trackWindows();
-    startWeatherEvents();
-  });
-  snowfall.loadFile('snow.html');
-  createLauncher();
+  reconcileDisplays();
   createTray();
-  Menu.setApplicationMenu(Menu.buildFromTemplate([
-    ...(process.platform === 'darwin' ? [{ role: 'appMenu' }] : []),
-    { label: '玩雪', submenu: [
-      { label: '开始玩雪', click: startPlaying },
-      { label: '退出玩雪', click: () => setPlaying(false) },
-      { label: '显示或隐藏雪景', click: toggleSnow },
-    ] },
-  ]));
+  trackWindows();
+  startWeatherEvents();
   inputTimer = setInterval(() => { if (playing) updateMouseCapture(); }, 25);
-  screen.on('display-metrics-changed', () => {
-    snowfall.setBounds(screen.getPrimaryDisplay().bounds);
-    const { x, y } = launcherPosition();
-    launcher.setPosition(x, y);
-    sendWindowEdges();
-  });
-  globalShortcut.register('CommandOrControl+Shift+S', () => setPlaying(!playing));
+  for (const event of ['display-added', 'display-removed', 'display-metrics-changed']) {
+    screen.on(event, reconcileDisplays);
+  }
+  globalShortcut.register('CommandOrControl+Shift+S', () => playing ? setPlaying(false) : startPlaying());
   globalShortcut.register('CommandOrControl+Shift+D', toggleSnow);
 });
 app.on('will-quit', () => {

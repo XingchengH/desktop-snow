@@ -7,10 +7,19 @@ const cell = 6;
 let width, height, snow, flakes, balls = [], carried, pointer, tool;
 let frameTime;
 let lastDragPoint, movedSnow = 0;
-const decorationModes = ['hat', 'scarf', 'face'];
-const decorationNames = { hat: '帽子', scarf: '围巾', face: '表情' };
-let decorationMode;
-let treeArtwork;
+const outfits = {
+  hat: ['帽子', '无', '礼帽', '红绒帽', '蓝绒帽'],
+  scarf: ['围巾', '无', '莓红', '湖蓝', '浅紫'],
+  arms: ['手臂', '无', '树枝', '连指手套'],
+  face: ['表情', '微笑', '开心', '惊讶'],
+};
+const wardrobe = document.getElementById('wardrobe');
+let dressedSnowman;
+let snowTexture;
+
+function seededRandom(seed) {
+  return () => ((seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296);
+}
 const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
 const snowfallDensity = { light: 0.45, steady: 1, flurry: 1.65, paused: 0 };
 const intensityLabels = { light: '小雪', steady: '中雪', flurry: '大雪', paused: '停雪' };
@@ -94,6 +103,17 @@ function treeSpot(tree) {
   return best?.x;
 }
 
+function placeTree(tree) {
+  const originalSize = tree.size;
+  for (const scale of [1, 0.8, 0.65, 0.5]) {
+    tree.size = Math.max(0.36, originalSize * scale);
+    const x = treeSpot(tree);
+    if (x !== undefined) return x;
+  }
+  tree.size = originalSize;
+  return undefined;
+}
+
 function weatherEvent(event) {
   const now = performance.now();
   if (event === 'warm') {
@@ -101,7 +121,8 @@ function weatherEvent(event) {
     weatherMessage.textContent = '短暂回暖，积雪正在融化';
   } else if (event === 'tree') {
     if (trees.length < 8 && !trees.some(tree => tree.plantedAt === undefined)) {
-      trees.push({ preferred: 0.15 + Math.random() * 0.7, size: 0.62 + Math.random() * 0.76 });
+      trees.push({ preferred: 0.15 + Math.random() * 0.7, size: 0.62 + Math.random() * 0.76,
+        seed: Math.floor(Math.random() * 2 ** 32) });
       weatherMessage.textContent = '正在积雪中寻找空地';
     } else {
       weatherMessage.textContent = trees.length >= 8 ? '桌面最多可以种八棵树' : '等雪地腾出空位，下一棵树就会长出来';
@@ -119,21 +140,25 @@ function melt(depth, dt) {
   }
 }
 
-function buildTreeArtwork() {
+function buildTreeArtwork(seed) {
   const artwork = document.createElement('canvas');
   artwork.width = 224;
   artwork.height = 292;
   const brush = artwork.getContext('2d');
   brush.scale(2, 2);
   brush.translate(56, 143);
-  let seed = 1321;
-  const random = () => ((seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296);
+  const random = seededRandom(seed);
+  const breadth = 0.88 + random() * 0.17;
+  const snowCover = 0.28 + random() * 0.42;
+  const palettes = [['#ffd68a', '#fff1c2'], ['#ffc68b', '#f59b99', '#ffe9bf'], ['#b5ddff', '#ffd191', '#9ae4ca']];
+  const palette = palettes[Math.floor(random() * palettes.length)];
+  const lights = [];
   brush.fillStyle = '#665044';
   brush.fillRect(-3, -44, 6, 44);
   for (let i = 0; i < 27; i++) {
     const y = -12 - i * 4.05;
     for (const side of [-1, 1]) {
-      const span = (3 + (26 - i) * 1.7) * (0.78 + random() * 0.29);
+      const span = (3 + (26 - i) * 1.7) * breadth * (0.72 + random() * 0.36);
       const tipY = y + 3 + random() * 8;
       const foliage = brush.createLinearGradient(0, y - 12, side * span, tipY);
       foliage.addColorStop(0, '#527d65');
@@ -150,7 +175,7 @@ function buildTreeArtwork() {
       }
       brush.quadraticCurveTo(0, y + 7, side * 2, y - 14);
       brush.fill();
-      if (i % 3 === 0 || random() > 0.72) {
+      if (random() < snowCover) {
         brush.strokeStyle = random() > 0.45 ? '#d4e9eb' : '#a6c8cc';
         brush.lineWidth = 1.3 + random() * 1.8;
         brush.lineCap = 'round';
@@ -161,19 +186,16 @@ function buildTreeArtwork() {
       }
     }
   }
-  for (let row = 0; row < 4; row++) {
-    const y = -29 - row * 23;
-    const span = 36 - row * 7;
-    for (let i = 0; i < 7; i++) {
-      const t = i / 6;
-      const x = (t * 2 - 1) * span;
-      const bulbY = y + Math.sin(t * Math.PI) * 7 + (random() - 0.5) * 3;
-      const glow = brush.createRadialGradient(x, bulbY, 0, x, bulbY, 4);
-      glow.addColorStop(0, i % 3 === 0 ? '#ffc6a8' : '#ffe6a1');
-      glow.addColorStop(0.44, '#ffd990b0');
-      glow.addColorStop(1, '#ffd99000');
-      brush.fillStyle = glow;
-      brush.fillRect(x - 4, bulbY - 4, 8, 8);
+  const rows = 3 + Math.floor(random() * 3);
+  for (let row = 0; row < rows; row++) {
+    const y = -25 - row * (76 / (rows - 1));
+    const span = (34 + (y + 25) * 0.29) * breadth;
+    const bulbs = 4 + Math.floor(random() * 4);
+    for (let i = 0; i < bulbs; i++) {
+      const t = (i + 0.25 + random() * 0.5) / bulbs;
+      lights.push({ x: (2 * t - 1) * span, y: y + Math.sin(t * Math.PI) * 7,
+        color: palette[Math.floor(random() * palette.length)], phase: random() * 7,
+        speed: 0.6 + random() * 1.4, radius: 3.4 + random() * 2.2 });
     }
   }
   brush.fillStyle = '#ffe1a1';
@@ -187,14 +209,23 @@ function buildTreeArtwork() {
     else brush.moveTo(x, y);
   }
   brush.fill();
-  return artwork;
+  const glow = document.createElement('canvas');
+  glow.width = glow.height = 24;
+  const lightBrush = glow.getContext('2d');
+  const halo = lightBrush.createRadialGradient(12, 12, 0, 12, 12, 12);
+  halo.addColorStop(0, '#fff0bdde');
+  halo.addColorStop(0.35, '#ffd1825c');
+  halo.addColorStop(1, '#ffd18200');
+  lightBrush.fillStyle = halo;
+  lightBrush.fillRect(0, 0, 24, 24);
+  return { artwork, lights, glow };
 }
 
 function drawTree(tree, now) {
   if (tree.x === undefined || now >= tree.checkAt) {
     if (now < (tree.checkAt ?? 0)) return;
     tree.checkAt = now + 350;
-    if (tree.x === undefined || !clearTreeSpot(tree, tree.x)) tree.x = treeSpot(tree);
+    if (tree.x === undefined || !clearTreeSpot(tree, tree.x)) tree.x = placeTree(tree);
     if (tree.x === undefined) return;
     if (tree.plantedAt === undefined) {
       tree.plantedAt = now;
@@ -205,13 +236,25 @@ function drawTree(tree, now) {
   }
   const growth = 1 - (1 - Math.max(0, Math.min(1, (now - tree.plantedAt) / 9000))) ** 2;
   const x = tree.x;
-  treeArtwork ??= buildTreeArtwork();
   ctx.save();
   ctx.translate(x, groundY() - snow[Math.floor(x / cell)] * 0.5);
   ctx.scale(growth * tree.size, growth * tree.size);
   ctx.transform(1, 0, -wind / 2200, 1, 0, 0);
-  ctx.drawImage(treeArtwork, -56, -143, 112, 146);
+  paintTree(tree.artwork ??= buildTreeArtwork(tree.seed), now);
   ctx.restore();
+}
+
+function paintTree({ artwork, lights, glow }, now) {
+  ctx.drawImage(artwork, -56, -143, 112, 146);
+  for (const light of lights) {
+    const brightness = reducedMotion.matches ? 0.78
+      : 0.68 + 0.26 * Math.sin(now / 1000 * light.speed + light.phase);
+    ctx.globalAlpha = brightness;
+    const { x, y, radius } = light;
+    ctx.drawImage(glow, x - radius, y - radius, radius * 2, radius * 2);
+    circle(x, y, 1.1, light.color);
+  }
+  ctx.globalAlpha = 1;
 }
 
 function deposit(depth, index, mass, offset, limit) {
@@ -302,28 +345,74 @@ function shed(edge, vx, vy, strength, blown = false) {
     const x = edge.x + Math.min(edge.width - 0.1, i * cell + cell / 2);
     if (x < 0 || x >= width || looseSnow.length >= 420 || depth < 1.2 || isCovered(edge, x) ||
         Math.random() > strength) continue;
-    const mass = Math.min(depth, (blown ? 0.7 : 1.5) + depth * strength * 0.5);
+    let mass = Math.min(depth, (blown ? 0.9 : 1.5) + depth * strength * 0.5);
     edge.depth[i] -= mass;
+    const clump = blown && depth >= 3 && Math.random() < 0.65;
+    if (clump) {
+      for (let j = 1; j <= 2 && i + j < edge.depth.length; j++) {
+        const neighbor = i + j;
+        const neighborX = edge.x + neighbor * cell + cell / 2;
+        if (neighborX >= edge.x + edge.width || isCovered(edge, neighborX)) break;
+        const piece = Math.min(edge.depth[neighbor], depth * 0.28);
+        edge.depth[neighbor] -= piece;
+        mass += piece;
+      }
+    }
     looseSnow.push({
       x, y: edgeTop(edge, x) - depth, vx: blown
         ? vx * (0.55 + Math.random() * 0.4)
         : vx * 0.35 - direction * (40 + Math.random() * 85),
       vy: Math.min(40, vy * 0.25) - 25 - Math.random() * 45, mass, source: edge.id,
+      clump, angle: Math.random() * Math.PI, spin: (Math.random() - 0.5) * 14,
+      age: 0, splitAt: clump && mass >= 4 ? 0.2 + Math.random() * 0.5 : Infinity,
     });
   }
 }
 
+function drawClump(grain) {
+  const radius = 1.4 + Math.sqrt(grain.mass) * 1.15;
+  ctx.save();
+  ctx.translate(grain.x, grain.y);
+  ctx.rotate(grain.angle);
+  ctx.scale(radius, radius);
+  ctx.fillStyle = '#b3cedf';
+  ctx.beginPath();
+  ctx.moveTo(-1.25, 0.16);
+  ctx.lineTo(-0.83, -0.67);
+  ctx.lineTo(-0.2, -0.52);
+  ctx.lineTo(0.4, -0.78);
+  ctx.lineTo(1.18, -0.28);
+  ctx.lineTo(1.02, 0.44);
+  ctx.lineTo(0.28, 0.71);
+  ctx.lineTo(-0.65, 0.48);
+  ctx.closePath();
+  ctx.fill();
+  ctx.fillStyle = '#f1f9ff';
+  ctx.beginPath();
+  ctx.moveTo(-1.25, 0.16);
+  ctx.lineTo(-0.83, -0.67);
+  ctx.lineTo(-0.2, -0.52);
+  ctx.lineTo(0.4, -0.78);
+  ctx.lineTo(1.18, -0.28);
+  ctx.lineTo(0.24, 0.16);
+  ctx.lineTo(-0.43, 0.06);
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+}
+
 function drawLooseSnow(dt) {
+  const fragments = [];
   looseSnow = looseSnow.filter(grain => {
     const previousY = grain.y;
     grain.vy += 470 * dt;
-    grain.vx += (wind - grain.vx) * (1 - Math.exp(-dt * 0.9));
+    grain.vx += (wind - grain.vx) * (1 - Math.exp(-dt * (grain.clump ? 0.42 : 0.95)));
     grain.x += grain.vx * dt;
     grain.y += grain.vy * dt;
     if (grain.x < 0 || grain.x >= width) return false;
     const edge = findLanding(grain.x, previousY, grain.y, grain.source);
     if (edge) {
-      edge.depth[Math.floor((grain.x - edge.x) / cell)] += grain.mass * 0.8;
+      edge.depth[Math.floor((grain.x - edge.x) / cell)] += grain.mass;
       return false;
     }
     const index = Math.floor(grain.x / cell);
@@ -332,9 +421,23 @@ function drawLooseSnow(dt) {
       return false;
     }
     if (grain.y >= height) return false;
-    circle(grain.x, grain.y, 1.1 + Math.sqrt(grain.mass) * 0.65, '#f3faff');
+    grain.age += dt;
+    grain.angle += grain.spin * dt;
+    if (grain.age >= grain.splitAt && looseSnow.length + fragments.length < 408) {
+      for (const [offset, share] of [[-1, 0.24], [0, 0.46], [1, 0.3]]) {
+        fragments.push({
+          ...grain, x: grain.x + offset * 2, vx: grain.vx + offset * 32,
+          vy: grain.vy - Math.abs(offset) * 16, mass: grain.mass * share,
+          splitAt: Infinity, clump: offset === 0,
+        });
+      }
+      return false;
+    }
+    if (grain.clump) drawClump(grain);
+    else circle(grain.x, grain.y, 0.65 + Math.sqrt(grain.mass) * 0.62, '#f3faff');
     return true;
   });
+  looseSnow.push(...fragments);
 }
 
 function newFlake(scattered = false) {
@@ -437,13 +540,57 @@ function draw(now) {
   }
 }
 
+function buildSnowTexture() {
+  const texture = document.createElement('canvas');
+  texture.width = texture.height = 144;
+  const brush = texture.getContext('2d');
+  const random = seededRandom(84291);
+  const radius = 68;
+  const shading = brush.createRadialGradient(48, 43, 3, 72, 72, radius);
+  shading.addColorStop(0, '#ffffff');
+  shading.addColorStop(0.52, '#eaf3f9');
+  shading.addColorStop(0.82, '#c5dce9');
+  shading.addColorStop(1, '#94b3c9');
+  brush.beginPath();
+  for (let i = 0; i < 96; i++) {
+    const angle = i * Math.PI / 48;
+    const edge = radius + 1.3 * Math.sin(angle * 9) + 0.8 * Math.sin(angle * 17 + 1.1);
+    const x = 72 + Math.cos(angle) * edge;
+    const y = 72 + Math.sin(angle) * edge;
+    if (i) brush.lineTo(x, y);
+    else brush.moveTo(x, y);
+  }
+  brush.closePath();
+  brush.clip();
+  brush.fillStyle = shading;
+  brush.fillRect(0, 0, 144, 144);
+  for (let i = 0; i < 2000; i++) {
+    const x = random() * 144;
+    const y = random() * 144;
+    const darker = random() < 0.47;
+    brush.fillStyle = darker ? '#49758f' : '#fff';
+    brush.globalAlpha = darker ? 0.04 + random() * 0.13 : 0.16 + random() * 0.52;
+    const grain = 0.45 + random() ** 3 * 2.3;
+    brush.fillRect(x, y, grain, grain * 0.8);
+  }
+  return texture;
+}
+
 function drawBall(ball) {
   const { x, y, r } = ball;
-  const shading = ctx.createRadialGradient(x - r * 0.34, y - r * 0.42, r * 0.06, x, y, r);
-  shading.addColorStop(0, '#ffffff');
-  shading.addColorStop(0.65, '#e9f5fd');
-  shading.addColorStop(1, '#a8cbdc');
-  circle(x, y, r, shading);
+  snowTexture ??= buildSnowTexture();
+  const shadow = ctx.createRadialGradient(0, 0, 0, 0, 0, r);
+  shadow.addColorStop(0, '#2a4b6575');
+  shadow.addColorStop(1, '#2a4b6500');
+  ctx.save();
+  ctx.translate(x + r * 0.12, y + r * 0.89);
+  ctx.scale(1, ball.stacked ? 0.25 : 0.4);
+  circle(0, 0, r, shadow);
+  ctx.restore();
+  const half = r * 72 / 68;
+  ctx.drawImage(snowTexture, x - half, y - half, half * 2, half * 2);
+  const head = balls.find(item => item.stacked && item.base === ball);
+  if (head) drawOutfit(ball, head);
   if (!ball.stacked) return;
   const dot = Math.max(1.4, r * 0.105);
   const face = ball.face ?? 0;
@@ -495,28 +642,111 @@ function drawBall(ball) {
   }
 }
 
+function drawOutfit({ x, y, r }, head) {
+  ctx.save();
+  if (head.arms) {
+    ctx.strokeStyle = '#795747';
+    ctx.lineWidth = Math.max(2, r * 0.09);
+    ctx.lineCap = 'round';
+    for (const side of [-1, 1]) {
+      const tip = x + side * r * 1.62;
+      ctx.beginPath();
+      ctx.moveTo(x + side * r * 0.8, y);
+      ctx.lineTo(tip, y - r * 0.7);
+      ctx.moveTo(x + side * r * 1.4, y - r * 0.52);
+      ctx.lineTo(x + side * r * 1.36, y - r * 0.81);
+      ctx.stroke();
+      if (head.arms === 2) {
+        circle(tip, y - r * 0.7, r * 0.18, '#ad5367');
+        circle(tip - side * r * 0.12, y - r * 0.79, r * 0.09, '#ad5367');
+      }
+    }
+  }
+  if (head.coat) {
+    const colors = ['#ae4c57', '#416b8f', '#597e68'];
+    ctx.fillStyle = colors[head.coat - 1];
+    ctx.beginPath();
+    ctx.moveTo(x - r * 0.46, y - r * 0.76);
+    ctx.bezierCurveTo(x - r, y - r * 0.25, x - r * 1.04, y + r * 0.64, x - r * 0.58, y + r * 0.75);
+    ctx.quadraticCurveTo(x, y + r * 0.98, x + r * 0.58, y + r * 0.75);
+    ctx.bezierCurveTo(x + r * 1.04, y + r * 0.64, x + r, y - r * 0.25, x + r * 0.46, y - r * 0.76);
+    ctx.closePath();
+    ctx.fill();
+    ctx.clip();
+    ctx.strokeStyle = '#f4e8dc55';
+    ctx.lineWidth = Math.max(1, r * 0.045);
+    for (const offset of [-0.38, 0.03, 0.43]) {
+      ctx.beginPath();
+      ctx.moveTo(x - r, y + r * offset);
+      ctx.quadraticCurveTo(x, y + r * (offset + 0.16), x + r, y + r * offset);
+      ctx.stroke();
+    }
+    for (const offset of [-0.35, 0.08, 0.5]) circle(x, y + r * offset, r * 0.071, '#eddec5');
+  }
+  ctx.restore();
+}
+
 function decorationTargets() {
-  return balls.filter(ball => ball.stacked).map(ball => ({
-    x: ball.x, y: ball.y, radius: Math.max(20, ball.r * 1.8),
-  }));
+  return balls.filter(ball => ball.stacked).flatMap(ball => [ball, ball.base].filter(Boolean)
+    .map(item => ({ x: item.x, y: item.y, radius: Math.max(20, item.r * 1.25) })));
 }
 
 function syncDecorationTargets() {
-  window.desktopSnow?.setDecorationTargets?.(tool === 'decorate' ? decorationTargets() : []);
+  const targets = decorationTargets().slice(0, 59);
+  if (!wardrobe.hidden) {
+    const { x, y, width, height } = wardrobe.getBoundingClientRect();
+    targets.unshift({ x, y, width, height });
+  }
+  window.desktopSnow?.setDecorationTargets?.(targets);
+}
+
+function closeWardrobe() {
+  dressedSnowman = undefined;
+  wardrobe.hidden = true;
+  syncDecorationTargets();
+}
+
+function openWardrobe(ball) {
+  dressedSnowman = ball;
+  const options = document.getElementById('outfits');
+  options.replaceChildren();
+  for (const [part, [label, ...choices]] of Object.entries(outfits)) {
+    const row = document.createElement('div');
+    row.className = 'outfit-row';
+    const title = document.createElement('span');
+    title.textContent = label;
+    row.append(title);
+    choices.forEach((choice, index) => {
+      const button = document.createElement('button');
+      button.textContent = choice;
+      button.setAttribute('aria-label', `${label}：${choice}`);
+      button.setAttribute('aria-pressed', String((ball[part] ?? 0) === index));
+      button.onclick = () => {
+        ball[part] = index;
+        for (const peer of row.querySelectorAll('button')) {
+          peer.setAttribute('aria-pressed', String(peer === button));
+        }
+      };
+      row.append(button);
+    });
+    options.append(row);
+  }
+  wardrobe.hidden = false;
+  wardrobe.style.left = `${Math.max(8, Math.min(ball.x - wardrobe.offsetWidth / 2, width - wardrobe.offsetWidth - 8))}px`;
+  wardrobe.style.top = `${Math.max(8, Math.min(ball.y - ball.r - wardrobe.offsetHeight - 18, groundY() - 142 - wardrobe.offsetHeight))}px`;
+  syncDecorationTargets();
 }
 
 function select(next) {
   tool = next;
+  closeWardrobe();
   for (const name of ['shovel', 'roll', 'decorate']) {
     document.getElementById(name).setAttribute('aria-pressed', name === tool);
   }
-  const decorate = document.getElementById('decorate');
-  decorate.textContent = tool === 'decorate' ? decorationNames[decorationMode] : '装饰';
-  syncDecorationTargets();
   hint.textContent = tool === 'shovel'
     ? '沿底部拖动，把雪推到铲子前方。'
     : tool === 'decorate'
-      ? `点击雪人的头换${decorationNames[decorationMode]}。再次点击工具按钮切换装饰类别。`
+      ? '点击雪人打开换装面板。'
       : '沿底部滚雪球，拖到更大的雪球上叠起来。';
 }
 
@@ -539,6 +769,7 @@ function select(next) {
     document.querySelector('header').hidden = !play;
     hint.hidden = !play;
     if (!play) {
+      closeWardrobe();
       if (carried) {
         carried.y = groundY() - carried.r - 5;
         balls.push(carried);
@@ -576,15 +807,14 @@ function select(next) {
     document.getElementById(name).onclick = () => select(name);
   }
   document.getElementById('decorate').onclick = () => {
-    decorationMode = decorationModes[(tool === 'decorate' ? decorationModes.indexOf(decorationMode) + 1 : 0)
-      % decorationModes.length];
     select('decorate');
     if (!decorationTargets().length) hint.textContent = '先把两个雪球叠起来，再给雪人换装。';
   };
+  document.getElementById('wardrobe-close').onclick = closeWardrobe;
   document.getElementById('close').onclick = () => window.desktopSnow?.leavePlayMode();
   document.getElementById('reset').onclick = () => {
     balls = [];
-    syncDecorationTargets();
+    closeWardrobe();
     looseSnow = [];
     warmingUntil = 0;
     weatherMessageUntil = 0;
@@ -594,15 +824,15 @@ function select(next) {
   };
   canvas.onpointerdown = event => {
     if (!play || event.button !== 0 || pointer !== undefined) return;
-    if (tool === 'decorate') {
-      const ball = balls.findLast(item => item.stacked &&
-        Math.hypot(event.offsetX - item.x, event.offsetY - item.y) <= Math.max(20, item.r * 1.8));
-      if (ball) {
-        ball[decorationMode] = ((ball[decorationMode] ?? 0) + 1) % (decorationMode === 'face' ? 3 : 4);
-        hint.textContent = `已更换${decorationNames[decorationMode]}。再点雪人可以试下一款。`;
-      }
+    const hit = item => item && Math.hypot(event.offsetX - item.x, event.offsetY - item.y) <= Math.max(20, item.r * 1.25);
+    const snowman = balls.findLast(item => item.stacked && (hit(item) || hit(item.base)));
+    if (snowman) {
+      if (dressedSnowman === snowman) closeWardrobe();
+      else openWardrobe(snowman);
       return;
     }
+    if (dressedSnowman) closeWardrobe();
+    if (tool === 'decorate') return;
     if (event.offsetY < groundY() - 62) return;
     pointer = event.pointerId;
     lastDragPoint = { x: event.offsetX, y: event.offsetY };
@@ -660,20 +890,25 @@ function select(next) {
       Math.abs(ball.x - carried.x) < ball.r &&
       Math.abs(ball.y - ball.r - carried.y) < carried.r + 24);
     carried.stacked = Boolean(base);
+    carried.base = base;
     if (base) {
       carried.x = base.x;
       carried.y = base.y - base.r - carried.r + 2;
-      hint.textContent = '叠好了一个雪人。';
+      hint.textContent = '叠好了一个雪人。点击它换装。';
     } else {
       carried.y = groundY() - carried.r - 5;
       if (movedSnow > 0) hint.textContent = '雪球变大了。把小雪球拖到它上方。';
     }
     balls.push(carried);
     carried = undefined;
+    syncDecorationTargets();
   };
 }
 
-addEventListener('resize', resize);
+addEventListener('resize', () => {
+  resize();
+  closeWardrobe();
+});
 intensityControl.addEventListener('click', () => {
   intensity = intensityOrder[(intensityOrder.indexOf(intensity) + 1) % intensityOrder.length];
   intensityControl.textContent = intensityLabels[intensity];
@@ -682,4 +917,37 @@ intensityControl.addEventListener('click', () => {
 });
 reducedMotion.addEventListener('change', syncSnowfall);
 resize();
-requestAnimationFrame(draw);
+if (new URLSearchParams(location.search).has('demo')) {
+  document.body.style.background = 'linear-gradient(#101e32, #25465b)';
+  function preview(now) {
+    ctx.clearRect(0, 0, width, height);
+    const scale = Math.min(width / 640, height / 320);
+    ctx.save();
+    ctx.translate((width - 640 * scale) / 2, (height - 320 * scale) / 2);
+    ctx.scale(scale, scale);
+    ctx.fillStyle = '#eef6ff';
+    ctx.font = '24px system-ui';
+    ctx.fillText('雪人纹理与圣诞树灯光', 48, 48);
+    ctx.fillStyle = '#b8d2e2';
+    ctx.font = '13px system-ui';
+    ctx.fillText('同一套实时渲染 · 灯光会缓慢明暗变化', 49, 73);
+    ctx.fillStyle = '#b6d3e3';
+    ctx.beginPath();
+    ctx.ellipse(320, 254, 275, 16, 0, 0, Math.PI * 2);
+    ctx.fill();
+    drawBall({ x: 137, y: 215, r: 39 });
+    drawBall({ x: 137, y: 155, r: 24, stacked: true, hat: 1, scarf: 1, face: 1 });
+    for (const [index, size] of [0.83, 1.18, 0.96].entries()) {
+      const x = 285 + index * 126;
+      ctx.save();
+      ctx.translate(x, 253);
+      ctx.scale(size, size);
+      paintTree(previewTrees[index], now);
+      ctx.restore();
+    }
+    ctx.restore();
+    requestAnimationFrame(preview);
+  }
+  const previewTrees = [42, 6821, 247251].map(buildTreeArtwork);
+  requestAnimationFrame(preview);
+} else requestAnimationFrame(draw);
