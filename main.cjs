@@ -56,6 +56,9 @@ function updateMouseCapture() {
     cursor.x < rect.x + rect.width && cursor.y >= rect.y && cursor.y < rect.y + rect.height);
   const snowbank = cursor.x >= workArea.x && cursor.x < workArea.x + workArea.width &&
     cursor.y >= floor - 62 && cursor.y < floor && !overWindow;
+  const windowLedge = !overWindow && trackedWindows.some(rect => !rect.desktopItem &&
+    cursor.x >= rect.x + 6 && cursor.x < rect.x + rect.width - 6 &&
+    cursor.y >= rect.y - 36 && cursor.y < rect.y);
   const overlay = snowfall.getBounds();
   const decoration = decorationTargets.some(({ x, y, radius, width, height }) => {
     const dx = cursor.x - overlay.x - x;
@@ -63,14 +66,17 @@ function updateMouseCapture() {
     return radius ? !overWindow && Math.hypot(dx, dy) <= radius
       : dx >= 0 && dy >= 0 && dx < width && dy < height;
   });
-  const capture = playing && (draggingSnow || toolbar || snowbank || decoration);
+  const onDisplay = cursor.x >= bounds.x && cursor.x < bounds.x + bounds.width &&
+    cursor.y >= bounds.y && cursor.y < bounds.y + bounds.height;
+  const capture = playing && (draggingSnow || (onDisplay && (toolbar || snowbank || decoration || windowLedge)));
   if (capture !== capturesMouse) {
     capturesMouse = capture;
     snowfall.setIgnoreMouseEvents(!capture);
   }
 }
 
-function sendSceneEdges({ snowfall, display, ready }) {
+function sendSceneEdges(scene) {
+  const { snowfall, display, ready } = scene;
   if (!ready) return;
   const overlay = snowfall.getBounds();
   const { x, y } = overlay;
@@ -86,13 +92,19 @@ function sendSceneEdges({ snowfall, display, ready }) {
     { id: -2, x: bounds.x, y: workArea.y, width: left, height: workArea.height },
     { id: -3, x: workArea.x + workArea.width, y: workArea.y, width: right, height: workArea.height },
   ].filter((bar, index) => (index === 0 ? bar.height : bar.width) >= 10);
-  snowfall.webContents.send('window-edges', [
+  const edges = [
     ...bars.map(bar => ({ ...bar, systemBar: true })),
     ...trackedWindows,
     ...finderIcons,
   ].filter(rect => rect.x < x + overlay.width && rect.x + rect.width > x &&
     rect.y < y + overlay.height && rect.y + rect.height > y)
-    .map(rect => ({ ...rect, x: rect.x - x, y: rect.y - y })));
+    .map(rect => ({ ...rect, x: rect.x - x, y: rect.y - y }));
+  const signature = JSON.stringify(edges);
+  // Send one unchanged sample after movement so the renderer can detect a stop.
+  if (signature === scene.edgeSignature && scene.sentStationarySample) return;
+  scene.sentStationarySample = signature === scene.edgeSignature;
+  scene.edgeSignature = signature;
+  snowfall.webContents.send('window-edges', edges);
 }
 
 function sendWindowEdges() {

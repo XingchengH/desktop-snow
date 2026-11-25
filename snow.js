@@ -222,7 +222,12 @@ function buildTreeArtwork(seed) {
 }
 
 function drawTree(tree, now) {
-  if (tree.x === undefined || now >= tree.checkAt) {
+  const edge = tree.anchor && anchoredEdge(tree.anchor);
+  if (tree.anchor) {
+    if (!edge) return;
+    tree.x = edge.x + tree.anchor.offset;
+    if (!fitsLedge(edge, tree.x, 55 * tree.size, 146 * tree.size)) return;
+  } else if (tree.x === undefined || now >= tree.checkAt) {
     if (now < (tree.checkAt ?? 0)) return;
     tree.checkAt = now + 350;
     if (tree.x === undefined || !clearTreeSpot(tree, tree.x)) tree.x = placeTree(tree);
@@ -237,7 +242,7 @@ function drawTree(tree, now) {
   const growth = 1 - (1 - Math.max(0, Math.min(1, (now - tree.plantedAt) / 9000))) ** 2;
   const x = tree.x;
   ctx.save();
-  ctx.translate(x, groundY() - snow[Math.floor(x / cell)] * 0.5);
+  ctx.translate(x, edge ? ledgeSurface(edge, x) : groundY() - snow[Math.floor(x / cell)] * 0.5);
   ctx.scale(growth * tree.size, growth * tree.size);
   ctx.transform(1, 0, -wind / 2200, 1, 0, 0);
   paintTree(tree.artwork ??= buildTreeArtwork(tree.seed), now);
@@ -335,6 +340,63 @@ function findLanding(x, previousY, y, source) {
     const surface = edgeTop(edge, x) - edge.depth[Math.floor((x - edge.x) / cell)];
     return previousY < surface && y >= surface;
   });
+}
+
+function ledgeSurface(edge, x) {
+  const slot = Math.max(0, Math.min(edge.depth.length - 1, Math.floor((x - edge.x) / cell)));
+  return edgeTop(edge, x) - edge.depth[slot];
+}
+
+function playableLedge(x, y, dropping = false) {
+  return ledges.find(edge => !edge.systemBar && !edge.desktopItem &&
+    x >= edge.x + 6 && x < edge.x + edge.width - 6 &&
+    y >= edge.y - (dropping ? 58 : 36) && y < edge.y + (dropping ? 10 : 0) &&
+    !isCovered(edge, x));
+}
+
+function anchoredEdge(anchor) {
+  return ledges.find(edge => edge.id === anchor.id);
+}
+
+function fitsLedge(edge, x, radius, objectHeight) {
+  const y = ledgeSurface(edge, x);
+  return x - radius >= Math.max(0, edge.x + 6) &&
+    x + radius <= Math.min(width, edge.x + edge.width - 6) && y - objectHeight >= 0 &&
+    !edge.covers.some(rect => rect.x < x + radius && rect.x + rect.width > x - radius &&
+      rect.y < edge.y && rect.y + rect.height > y - objectHeight);
+}
+
+function plantOnLedge(edge, x) {
+  if (trees.length >= 8) return '这块屏幕最多可以种八棵树。';
+  if (edgeTop(edge, x) - ledgeSurface(edge, x) < 1) return '等窗沿积一点雪再种树。';
+  const size = [0.48 + Math.random() * 0.34, 0.42, 0.36].find(scale =>
+    fitsLedge(edge, x, 55 * scale, 146 * scale) &&
+    !trees.some(tree => tree.anchor?.id === edge.id &&
+      Math.abs(tree.anchor.offset - (x - edge.x)) < 55 * (tree.size + scale) + 12));
+  if (!size) return '这段窗沿空间不够，试试另一个位置。';
+  trees.push({ x, size, anchor: { id: edge.id, offset: x - edge.x },
+    seed: Math.floor(Math.random() * 2 ** 32), plantedAt: performance.now() });
+  return '树正在窗沿长出来。';
+}
+
+function updateAnchoredBalls() {
+  for (const ball of balls) {
+    if (!ball.anchor) continue;
+    const edge = anchoredEdge(ball.anchor);
+    ball.x = edge ? edge.x + ball.anchor.offset : ball.x;
+    ball.hidden = !edge || !fitsLedge(edge, ball.x, ball.r, ball.r * 2);
+    if (!ball.hidden) ball.y = ledgeSurface(edge, ball.x) - ball.r;
+  }
+  for (const ball of balls) {
+    if (!ball.base?.anchor) continue;
+    const edge = anchoredEdge(ball.base.anchor);
+    ball.hidden = ball.base.hidden || !edge ||
+      !fitsLedge(edge, ball.base.x, ball.r, 2 * (ball.r + ball.base.r));
+    if (!ball.hidden) {
+      ball.x = ball.base.x;
+      ball.y = ball.base.y - ball.base.r - ball.r + 2;
+    }
+  }
 }
 
 function shed(edge, vx, vy, strength, blown = false) {
@@ -455,12 +517,20 @@ function syncSnowfall() {
   while (flakes.length < count) flakes.push(newFlake(true));
 }
 
+function resizeBackingCanvas() {
+  const preview = new URLSearchParams(location.search).has('demo');
+  const density = play || preview ? devicePixelRatio : Math.min(1.25, devicePixelRatio);
+  const pixelsWide = Math.max(1, Math.round(width * density));
+  const pixelsHigh = Math.max(1, Math.round(height * density));
+  if (canvas.width !== pixelsWide) canvas.width = pixelsWide;
+  if (canvas.height !== pixelsHigh) canvas.height = pixelsHigh;
+  ctx.setTransform(pixelsWide / width, 0, 0, pixelsHigh / height, 0, 0);
+}
+
 function resize() {
   width = innerWidth;
   height = innerHeight;
-  canvas.width = width * devicePixelRatio;
-  canvas.height = height * devicePixelRatio;
-  ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+  resizeBackingCanvas();
   snow = Array.from({ length: Math.ceil(width / cell) }, (_, i) =>
     Math.max(0, 2 + 3 * Math.sin(i / 12) + 2 * Math.sin(i / 4)));
   flakes = [];
@@ -476,8 +546,10 @@ function circle(x, y, radius, color) {
 
 function draw(now) {
   requestAnimationFrame(draw);
-  if (document.hidden || (!play && frameTime !== undefined && now - frameTime < 30)) return;
-  const dt = Math.min((now - (frameTime ?? now)) / 1000, 0.06);
+  if (document.hidden) return;
+  // A little tolerance avoids dropping every third 60 Hz frame near the limit.
+  if (!play && frameTime !== undefined && now - frameTime < 46) return;
+  const dt = Math.min((now - (frameTime ?? now)) / 1000, 0.075);
   frameTime = now;
   updateWind(now, dt);
   const warming = now < warmingUntil;
@@ -536,7 +608,8 @@ function draw(now) {
     ctx.fillStyle = '#e8f4fc';
     ctx.fill();
     for (const tree of trees) drawTree(tree, now);
-    for (const ball of balls.concat(carried ?? [])) drawBall(ball);
+    updateAnchoredBalls();
+    for (const ball of balls.concat(carried ?? [])) if (!ball.hidden) drawBall(ball);
   }
 }
 
@@ -687,7 +760,7 @@ function drawOutfit({ x, y, r }, head) {
 }
 
 function decorationTargets() {
-  return balls.filter(ball => ball.stacked).flatMap(ball => [ball, ball.base].filter(Boolean)
+  return balls.filter(ball => ball.stacked && !ball.hidden).flatMap(ball => [ball, ball.base].filter(Boolean)
     .map(item => ({ x: item.x, y: item.y, radius: Math.max(20, item.r * 1.25) })));
 }
 
@@ -740,21 +813,22 @@ function openWardrobe(ball) {
 function select(next) {
   tool = next;
   closeWardrobe();
-  for (const name of ['shovel', 'roll', 'decorate']) {
+  for (const name of ['shovel', 'roll', 'decorate', 'tree']) {
     document.getElementById(name).setAttribute('aria-pressed', name === tool);
   }
   hint.textContent = tool === 'shovel'
-    ? '沿底部拖动，把雪推到铲子前方。'
+    ? '沿底部或窗沿上方拖动，把雪推到铲子前方。'
+    : tool === 'tree' ? '点击有积雪的窗沿种树，或点击底部雪地自动选址。'
     : tool === 'decorate'
       ? '点击雪人打开换装面板。'
-      : '沿底部滚雪球，拖到更大的雪球上叠起来。';
+      : '沿雪带或窗沿滚雪球，也可以把雪球拖到窗沿放下。';
 }
 
 {
   select('roll');
   window.desktopSnow?.onWeatherEvent(weatherEvent);
   document.getElementById('warm').onclick = () => weatherEvent('warm');
-  document.getElementById('tree').onclick = () => weatherEvent('tree');
+  document.getElementById('tree').onclick = () => select('tree');
   document.getElementById('gust').onclick = () => startGust(performance.now(), true);
   const steadyWind = document.getElementById('steady-wind');
   steadyWind.onclick = () => {
@@ -766,11 +840,13 @@ function select(next) {
   };
   window.desktopSnow?.onPlayMode(enabled => {
     play = enabled;
+    resizeBackingCanvas();
     document.querySelector('header').hidden = !play;
     hint.hidden = !play;
     if (!play) {
       closeWardrobe();
       if (carried) {
+        carried.anchor = undefined;
         carried.y = groundY() - carried.r - 5;
         balls.push(carried);
       }
@@ -786,7 +862,7 @@ function select(next) {
     const previous = new Map(ledges.map(edge => [edge.id, edge]));
     ledges = edges.map((rect, index) => {
       const old = previous.get(rect.id);
-      const dt = old ? Math.max(0.08, (now - old.time) / 1000) : 1;
+      const dt = old ? Math.min(0.2, Math.max(0.08, (now - old.time) / 1000)) : 1;
       const vx = old ? (rect.x - old.x) / dt : 0;
       const vy = old ? (rect.y - old.y) / dt : 0;
       const edge = {
@@ -802,6 +878,11 @@ function select(next) {
       }
       return edge;
     }).sort((a, b) => a.y - b.y);
+    updateAnchoredBalls();
+    if (balls.some(ball => ball.anchor)) {
+      if (dressedSnowman?.hidden) closeWardrobe();
+      else syncDecorationTargets();
+    }
   });
   for (const name of ['shovel', 'roll']) {
     document.getElementById(name).onclick = () => select(name);
@@ -824,8 +905,16 @@ function select(next) {
   };
   canvas.onpointerdown = event => {
     if (!play || event.button !== 0 || pointer !== undefined) return;
+    const x = event.offsetX, y = event.offsetY;
+    const edge = playableLedge(x, y);
+    const onSnowbank = onGround(x) && y >= groundY() - 62 && y < groundY();
+    if (tool === 'tree') {
+      if (edge) hint.textContent = plantOnLedge(edge, x);
+      else if (onSnowbank) weatherEvent('tree');
+      return;
+    }
     const hit = item => item && Math.hypot(event.offsetX - item.x, event.offsetY - item.y) <= Math.max(20, item.r * 1.25);
-    const snowman = balls.findLast(item => item.stacked && (hit(item) || hit(item.base)));
+    const snowman = balls.findLast(item => item.stacked && !item.hidden && (hit(item) || hit(item.base)));
     if (snowman) {
       if (dressedSnowman === snowman) closeWardrobe();
       else openWardrobe(snowman);
@@ -833,33 +922,36 @@ function select(next) {
     }
     if (dressedSnowman) closeWardrobe();
     if (tool === 'decorate') return;
-    if (event.offsetY < groundY() - 62) return;
+    if (!onSnowbank && !edge) return;
     pointer = event.pointerId;
     lastDragPoint = { x: event.offsetX, y: event.offsetY };
     movedSnow = 0;
     canvas.setPointerCapture(pointer);
     window.desktopSnow?.setDragging(true);
     if (tool === 'roll') {
-      const existing = balls.findLastIndex(ball =>
+      const existing = balls.findLastIndex(ball => !ball.hidden &&
         Math.hypot(event.offsetX - ball.x, event.offsetY - ball.y) < ball.r);
       carried = existing >= 0 ? balls.splice(existing, 1)[0]
         : { x: event.offsetX, y: event.offsetY, r: 8 };
+      carried.anchor = undefined;
     }
   };
   function moveSnow(x, y, direction) {
-    if (!onGround(x) || y < groundY() - 64 || y >= groundY()) return;
-    const index = Math.floor(x / cell);
+    const edge = playableLedge(x, y);
+    if (!edge && (!onGround(x) || y < groundY() - 62 || y >= groundY())) return;
+    const depth = edge?.depth ?? snow;
+    const index = Math.floor((x - (edge?.x ?? 0)) / cell);
     let collected = 0;
-    for (let i = Math.max(0, index - 2); i <= Math.min(snow.length - 1, index + 2); i++) {
-      const amount = Math.min(snow[i], carried ? (carried.r < 42 ? 1 : 0) : 3);
-      snow[i] -= amount;
+    for (let i = Math.max(0, index - 2); i <= Math.min(depth.length - 1, index + 2); i++) {
+      const amount = Math.min(depth[i], carried ? (carried.r < 42 ? 1 : 0) : 3);
+      depth[i] -= amount;
       collected += amount;
     }
     movedSnow += collected;
     if (carried) carried.r = Math.min(42, Math.sqrt(carried.r ** 2 + collected * 2));
     else {
-      const ahead = Math.max(0, Math.min(snow.length - 1, index + direction * 3));
-      snow[ahead] += collected;
+      const ahead = Math.max(0, Math.min(depth.length - 1, index + direction * 3));
+      depth[ahead] += collected;
     }
   }
   function followDrag(event) {
@@ -886,7 +978,8 @@ function select(next) {
       if (movedSnow > 0) hint.textContent = '雪已推到铲子前方。';
       return;
     }
-    const base = balls.findLast(ball => ball.r >= carried.r * 1.15 &&
+    const base = balls.findLast(ball => !ball.hidden && !ball.stacked && ball.r >= carried.r * 1.15 &&
+      !balls.some(other => other.base === ball) &&
       Math.abs(ball.x - carried.x) < ball.r &&
       Math.abs(ball.y - ball.r - carried.y) < carried.r + 24);
     carried.stacked = Boolean(base);
@@ -896,11 +989,18 @@ function select(next) {
       carried.y = base.y - base.r - carried.r + 2;
       hint.textContent = '叠好了一个雪人。点击它换装。';
     } else {
-      carried.y = groundY() - carried.r - 5;
-      if (movedSnow > 0) hint.textContent = '雪球变大了。把小雪球拖到它上方。';
+      const edge = playableLedge(carried.x, carried.y, true);
+      if (edge && fitsLedge(edge, carried.x, carried.r, carried.r * 2)) {
+        carried.anchor = { id: edge.id, offset: carried.x - edge.x };
+        hint.textContent = '雪球已放到窗沿。拖个小雪球过来叠雪人。';
+      } else {
+        carried.y = groundY() - carried.r - 5;
+        if (movedSnow > 0) hint.textContent = '雪球变大了。把小雪球拖到它上方。';
+      }
     }
     balls.push(carried);
     carried = undefined;
+    updateAnchoredBalls();
     syncDecorationTargets();
   };
 }
