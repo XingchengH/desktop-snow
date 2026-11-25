@@ -401,8 +401,8 @@ function drawTree(tree, now) {
   const edge = tree.anchor && anchoredEdge(tree.anchor);
   if (tree.anchor) {
     if (!edge) return;
-    tree.x = edge.x + tree.anchor.offset;
-    if (!fitsLedge(edge, tree.x, 55 * tree.size, 146 * tree.size, true)) return;
+    // Keep the saved offset so expanding a resized window restores the original position.
+    tree.x = edge.x + Math.min(tree.anchor.offset, Math.max(0, edge.width - 1));
   } else if (tree.x === undefined) {
     if (now < (tree.checkAt ?? 0)) return;
     tree.checkAt = now + 350;
@@ -419,8 +419,12 @@ function drawTree(tree, now) {
   const growth = 1 - (1 - Math.max(0, Math.min(1, (now - tree.plantedAt) / 9000))) ** 2;
   const x = tree.x;
   const y = edge ? ledgeSurface(edge, x) : groundY() - snow[Math.floor(x / cell)] * 0.5;
-  tree.hit = { x: x - 43 * tree.size, y: y - 138 * tree.size * growth,
-    width: 86 * tree.size, height: 138 * tree.size * growth };
+  const top = y - 138 * tree.size * growth;
+  const left = Math.max(0, x - 43 * tree.size);
+  const right = Math.min(width, x + 43 * tree.size);
+  if (y <= 0 || top >= height || right <= left) return;
+  tree.hit = { x: left, y: Math.max(0, top), width: right - left,
+    height: y - Math.max(0, top) };
   ctx.save();
   clipBehindWindows(edge?.covers ?? ledges, {
     x: x - 72 * tree.size, y: y - 143 * tree.size,
@@ -435,7 +439,7 @@ function drawTree(tree, now) {
 
 function treeDrop(tree, x, y) {
   const edge = playableLedge(x, y, true);
-  if (edge && fitsLedge(edge, x, 55 * tree.size, 146 * tree.size) &&
+  if (edge && fitsTreeBase(edge, x, tree.size) &&
       !trees.some(other => other !== tree && other.anchor?.id === edge.id &&
         Math.abs(edge.x + other.anchor.offset - x) < 55 * (tree.size + other.size) + 12)) {
     return { x, y: ledgeSurface(edge, x), anchor: { id: edge.id, offset: x - edge.x } };
@@ -652,10 +656,16 @@ function fitsLedge(edge, x, radius, objectHeight, ignoreOcclusion = false) {
       rect.y < edge.y && rect.y + rect.height > y - objectHeight));
 }
 
+function fitsTreeBase(edge, x, size) {
+  const radius = 55 * size;
+  return x - radius >= edge.x + 6 && x + radius <= edge.x + edge.width - 6 &&
+    ledgeSurface(edge, x) > 0;
+}
+
 function ledgeTreeSize(edge, x, preferred = 0.62) {
   if (trees.length >= 8 || edgeTop(edge, x) - ledgeSurface(edge, x) < 1) return undefined;
   return [preferred, 0.42, 0.36].find(scale =>
-    fitsLedge(edge, x, 55 * scale, 146 * scale) &&
+    fitsTreeBase(edge, x, scale) &&
     !trees.some(tree => tree.anchor?.id === edge.id &&
       Math.abs(tree.anchor.offset - (x - edge.x)) < 55 * (tree.size + scale) + 12));
 }
