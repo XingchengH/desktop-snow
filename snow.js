@@ -3,6 +3,25 @@ let ledges = [];
 const canvas = document.querySelector('canvas');
 const ctx = canvas.getContext('2d');
 const hint = document.querySelector('output');
+const toolbar = document.querySelector('header');
+let launcherAnchor;
+
+function placeToolbar() {
+  if (!play || !launcherAnchor) return;
+  const { x, y, size, left, right, top, bottom } = launcherAnchor;
+  const gap = 8;
+  toolbar.style.maxWidth = `${Math.max(1, right - left - gap * 2)}px`;
+  const w = toolbar.offsetWidth, h = toolbar.offsetHeight;
+  const panelX = Math.max(left + gap, Math.min(right - w - gap, x + (size - w) / 2));
+  const above = y - h - gap >= top + gap &&
+    (y + size + h + gap > bottom - gap || y - top > bottom - y);
+  const panelY = Math.max(top + gap, Math.min(bottom - h - gap, above ? y - h - gap : y + size + gap));
+  toolbar.style.left = `${panelX}px`;
+  toolbar.style.top = `${panelY}px`;
+  hint.style.left = `${panelX}px`;
+  hint.style.top = `${above ? Math.max(top, panelY - 23) : panelY + h + 4}px`;
+  window.desktopSnow?.setToolbarBounds({ x: panelX, y: panelY, width: w, height: h });
+}
 const cell = 6;
 let width, height, snow, flakes, balls = [], carried, pointer, tool;
 let frameTime;
@@ -841,8 +860,9 @@ function select(next) {
   window.desktopSnow?.onPlayMode(enabled => {
     play = enabled;
     resizeBackingCanvas();
-    document.querySelector('header').hidden = !play;
+    toolbar.hidden = !play;
     hint.hidden = !play;
+    placeToolbar();
     if (!play) {
       closeWardrobe();
       if (carried) {
@@ -853,6 +873,10 @@ function select(next) {
       carried = undefined;
       pointer = undefined;
     }
+  });
+  window.desktopSnow?.onLauncherAnchor(anchor => {
+    launcherAnchor = anchor;
+    placeToolbar();
   });
   window.desktopSnow?.onWindowEdges(edges => {
     dockSurface = edges.find(edge => edge.id === -1);
@@ -1007,6 +1031,7 @@ function select(next) {
 
 addEventListener('resize', () => {
   resize();
+  placeToolbar();
   closeWardrobe();
 });
 intensityControl.addEventListener('click', () => {

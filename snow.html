@@ -7,7 +7,7 @@
 *{box-sizing:border-box}
 body{margin:0;overflow:hidden;font:14px system-ui;color:#effaff}
 canvas{display:block;width:100vw;height:100vh;touch-action:none}
-header{position:absolute;bottom:calc(85px + var(--floor-inset, 0px));left:50%;transform:translateX(-50%);padding:9px;display:flex;align-items:center;gap:7px;background:#152b40eb;border-radius:14px}
+header{position:absolute;padding:9px;display:flex;flex-wrap:wrap;align-items:center;gap:7px;width:max-content;background:#152b40eb;border-radius:14px}
 header[hidden]{display:none}
 strong{margin-right:auto}
 button{-webkit-app-region:no-drag;border:1px solid #99bac0;border-radius:8px;background:#203a51;color:white;padding:5px 9px;cursor:pointer}
@@ -17,7 +17,7 @@ button[aria-pressed=true]{background:#daeff8;color:#112d40}
 .outfit-row{display:flex;align-items:center;gap:5px;margin-top:6px}
 .outfit-row span{width:38px;flex:none;color:#b9d8e9;font-size:12px}
 .outfit-row button{font-size:12px;padding:4px 6px}
-output{position:absolute;bottom:calc(62px + var(--floor-inset, 0px));left:50%;transform:translateX(-50%);pointer-events:none;text-shadow:0 1px 4px #000}
+output{position:absolute;max-width:min(520px,calc(100vw - 16px));width:max-content;pointer-events:none;text-shadow:0 1px 4px #000}
 #weather{position:absolute;right:18px;bottom:48px;padding:5px 10px;background:#122b42ed;border-radius:9px;pointer-events:none}
 </style>
 <header hidden><strong>桌面雪景</strong><button id="intensity" aria-label="降雪强度：中雪" title="点击切换降雪强度">中雪</button><button id="shovel">雪铲</button><button id="roll">滚雪球</button><button id="decorate" title="切换要试戴的装饰">装饰</button><button id="gust" title="吹来一阵风">阵风</button><button id="steady-wind" aria-pressed="false">持续风</button><button id="warm">融雪</button><button id="tree">种树</button><button id="reset">重来</button><button id="close" aria-label="关闭">×</button></header>

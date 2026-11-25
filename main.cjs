@@ -10,6 +10,8 @@ let tracker, tray, eventTimer;
 const scenes = new Map();
 let displayChoice = 'primary';
 let activeScene;
+const launcherSize = 42;
+let launcherPositions = {};
 let playing = false;
 let visible = true;
 let trackedWindows = [];
@@ -32,11 +34,15 @@ function preferencePath() {
 function chooseDisplay(value) {
   displayChoice = value;
   try {
-    fs.writeFileSync(preferencePath(), JSON.stringify({ display: value }));
+    savePreferences();
   } catch (error) {
     console.warn('Display preference:', error.message);
   }
   reconcileDisplays();
+}
+
+function savePreferences() {
+  fs.writeFileSync(preferencePath(), JSON.stringify({ display: displayChoice, launcherPositions }));
 }
 
 function snowFloor(display) {
@@ -49,9 +55,11 @@ function updateMouseCapture() {
   const cursor = screen.getCursorScreenPoint();
   const { bounds, workArea } = display;
   const floor = snowFloor(display);
-  const center = bounds.x + bounds.width / 2;
-  const toolbar = Math.abs(cursor.x - center) <= 350 &&
-    cursor.y >= floor - 135 && cursor.y <= floor - 85;
+  const overlay = snowfall.getBounds();
+  const panel = activeScene.toolbarBounds;
+  const localX = cursor.x - overlay.x, localY = cursor.y - overlay.y;
+  const toolbar = panel && localX >= panel.x && localX < panel.x + panel.width &&
+    localY >= panel.y && localY < panel.y + panel.height;
   const overWindow = [...trackedWindows, ...finderIcons].some(rect => cursor.x >= rect.x &&
     cursor.x < rect.x + rect.width && cursor.y >= rect.y && cursor.y < rect.y + rect.height);
   const snowbank = cursor.x >= workArea.x && cursor.x < workArea.x + workArea.width &&
@@ -59,7 +67,6 @@ function updateMouseCapture() {
   const windowLedge = !overWindow && trackedWindows.some(rect => !rect.desktopItem &&
     cursor.x >= rect.x + 6 && cursor.x < rect.x + rect.width - 6 &&
     cursor.y >= rect.y - 36 && cursor.y < rect.y);
-  const overlay = snowfall.getBounds();
   const decoration = decorationTargets.some(({ x, y, radius, width, height }) => {
     const dx = cursor.x - overlay.x - x;
     const dy = cursor.y - overlay.y - y;
@@ -127,13 +134,12 @@ function setPlaying(next, scene = activeScene) {
   updateMouseCapture();
   snowfall.setFocusable(playing);
   if (playing) {
-    launcher?.hide();
     snowfall.focus();
-  } else {
-    launcher?.showInactive();
-    launcher?.moveTop();
   }
+  launcher?.moveTop();
+  sendLauncherAnchor(scene);
   snowfall.webContents.send('play-mode', playing);
+  launcher?.webContents.send('play-mode', playing);
   if (!playing) activeScene = undefined;
   updateMenu();
 }
@@ -153,18 +159,45 @@ function startPlaying(scene) {
   setPlaying(true, scene ?? scenes.get(nearest.id) ?? scenes.values().next().value);
 }
 
+function clampLauncher(display, x, y) {
+  const area = display.workArea;
+  return {
+    x: Math.round(Math.max(area.x, Math.min(area.x + area.width - launcherSize, x))),
+    y: Math.round(Math.max(area.y, Math.min(area.y + area.height - launcherSize, y))),
+  };
+}
+
 function launcherPosition(display) {
-  return { x: display.workArea.x + 14, y: snowFloor(display) - 60 };
+  const saved = launcherPositions[display.id];
+  const area = display.workArea;
+  return clampLauncher(display, area.x + (Number.isFinite(saved?.x) ? saved.x : 14),
+    area.y + (Number.isFinite(saved?.y) ? saved.y : area.height - 60));
+}
+
+function sendLauncherAnchor(scene) {
+  if (!scene.ready || !scene.launcher) return;
+  const actual = scene.launcher.getBounds();
+  const overlay = scene.snowfall.getBounds();
+  const work = scene.display.workArea;
+  scene.snowfall.webContents.send('launcher-anchor', {
+    x: actual.x - overlay.x, y: actual.y - overlay.y, size: launcherSize,
+    left: work.x - overlay.x, top: work.y - overlay.y,
+    right: work.x + work.width - overlay.x, bottom: work.y + work.height - overlay.y,
+  });
 }
 
 function createLauncher(scene) {
   const launcher = new BrowserWindow({
-    ...launcherPosition(scene.display), width: 112, height: 38, transparent: true, frame: false,
+    ...launcherPosition(scene.display), width: launcherSize, height: launcherSize, transparent: true, frame: false,
     show: false, alwaysOnTop: true, skipTaskbar: true, resizable: false,
     focusable: false, acceptFirstMouse: true, hasShadow: false,
     webPreferences: { preload: path.join(__dirname, 'preload.cjs') },
   });
-  launcher.once('ready-to-show', () => { if (activeScene !== scene) launcher.showInactive(); });
+  launcher.once('ready-to-show', () => {
+    launcher.showInactive();
+    launcher.moveTop();
+    sendLauncherAnchor(scene);
+  });
   launcher.loadFile('launcher.html');
   return launcher;
 }
@@ -204,6 +237,57 @@ function displayMenu() {
   };
 }
 
+const accessibilitySettings = 'x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility';
+let iconAccess;
+let iconAccessDialogOpen = false;
+
+function refreshIconAccess() {
+  if (process.platform !== 'darwin') return;
+  const granted = systemPreferences.isTrustedAccessibilityClient(false);
+  if (granted === iconAccess) return;
+  iconAccess = granted;
+  updateMenu();
+}
+
+async function showIconAccessHelp() {
+  if (iconAccessDialogOpen) return;
+  iconAccessDialogOpen = true;
+  try {
+    refreshIconAccess();
+    const granted = iconAccess;
+    const { response } = await dialog.showMessageBox({
+      type: 'info',
+      message: granted ? '桌面图标积雪 · 已授权' : '桌面图标积雪 · 需要辅助功能权限',
+      detail: 'Desktop Snow 使用此权限读取 Finder 中文件、文件夹和快捷方式的位置，让雪落在图标上。macOS 的辅助功能权限范围更广，授权是可选的。窗沿和 Dock 积雪可以照常使用。\n\n如果换过版本、系统开关已开但这里仍显示需要权限，请在辅助功能里移除旧的 Desktop Snow 条目，再添加「应用程序」中的当前版本。',
+      buttons: granted ? ['打开辅助功能设置', '关闭'] : ['请求授权', '打开辅助功能设置', '稍后'],
+      cancelId: granted ? 1 : 2,
+    });
+    if (!granted && response === 0) {
+      if (!systemPreferences.isTrustedAccessibilityClient(true)) {
+        await shell.openExternal(accessibilitySettings);
+      }
+    } else if (response === (granted ? 0 : 1)) {
+      await shell.openExternal(accessibilitySettings);
+    }
+    refreshIconAccess();
+  } catch (error) {
+    await dialog.showMessageBox({
+      type: 'error', message: '无法打开辅助功能设置',
+      detail: '请手动打开「系统设置 → 隐私与安全性 → 辅助功能」。',
+    });
+  } finally {
+    iconAccessDialogOpen = false;
+  }
+}
+
+function iconAccessMenu() {
+  if (process.platform !== 'darwin') return [];
+  return [{
+    label: iconAccess ? '桌面图标积雪：已授权…' : '桌面图标积雪：需要授权…',
+    click: showIconAccessHelp,
+  }];
+}
+
 function updateMenu() {
   tray?.setContextMenu(Menu.buildFromTemplate([
     { label: playing ? '退出玩雪' : '开始玩雪', click: () => {
@@ -213,10 +297,7 @@ function updateMenu() {
     displayMenu(),
     { label: '试试回暖', enabled: visible, click: () => sendWeather('warm') },
     { label: '种一棵圣诞树', enabled: visible, click: () => sendWeather('tree') },
-    ...(process.platform === 'darwin' ? [{
-      label: '允许桌面图标积雪',
-      click: () => systemPreferences.isTrustedAccessibilityClient(true),
-    }] : []),
+    ...iconAccessMenu(),
     { label: visible ? '隐藏雪景' : '显示雪景', click: toggleSnow },
     { label: '检查更新…', click: checkForUpdates },
     { type: 'separator' },
@@ -229,6 +310,7 @@ function updateMenu() {
       { label: '退出玩雪', click: () => setPlaying(false) },
       { label: '显示或隐藏雪景', click: toggleSnow },
       { label: '检查更新…', click: checkForUpdates },
+      ...iconAccessMenu(),
       displayMenu(),
     ] },
   ]));
@@ -317,6 +399,7 @@ function createScene(display) {
     scene.ready = true;
     if (visible) snowfall.showInactive();
     sendSceneEdges(scene);
+    sendLauncherAnchor(scene);
   });
   snowfall.loadFile('snow.html');
   scene.launcher = createLauncher(scene);
@@ -336,6 +419,7 @@ function reconcileDisplays() {
     scene.snowfall.setBounds(display.bounds);
     const { x, y } = launcherPosition(display);
     scene.launcher.setPosition(x, y);
+    sendLauncherAnchor(scene);
   }
   for (const [id, scene] of scenes) {
     if (ids.has(id)) continue;
@@ -350,7 +434,8 @@ function reconcileDisplays() {
 
 app.whenReady().then(() => {
   try {
-    const { display } = JSON.parse(fs.readFileSync(preferencePath(), 'utf8'));
+    const { display, launcherPositions: positions } = JSON.parse(fs.readFileSync(preferencePath(), 'utf8'));
+    if (positions && typeof positions === 'object') launcherPositions = positions;
     if (typeof display === 'string' && /^(primary|all|-?\d+)$/.test(display)) displayChoice = display;
   } catch (error) {
     if (error.code !== 'ENOENT') console.warn('Display preference:', error.message);
@@ -360,7 +445,35 @@ app.whenReady().then(() => {
   });
   ipcMain.on('enter-play-mode', event => {
     const scene = Array.from(scenes.values()).find(entry => event.sender === entry.launcher.webContents);
-    if (scene) startPlaying(scene);
+    if (scene === activeScene && playing) setPlaying(false);
+    else if (scene) startPlaying(scene);
+  });
+  ipcMain.on('launcher-drag', (event, phase) => {
+    const scene = [...scenes.values()].find(entry => event.sender === entry.launcher.webContents);
+    if (!scene) return;
+    const cursor = screen.getCursorScreenPoint();
+    if (phase === 'start') {
+      const { x, y } = scene.launcher.getBounds();
+      scene.launcherDrag = { x: cursor.x - x, y: cursor.y - y };
+      return;
+    }
+    if (!scene.launcherDrag) return;
+    if (phase === 'move' || phase === 'finish') {
+      const { x, y } = clampLauncher(scene.display, cursor.x - scene.launcherDrag.x, cursor.y - scene.launcherDrag.y);
+      scene.launcher.setPosition(x, y);
+      sendLauncherAnchor(scene);
+      if (phase === 'finish') {
+        const area = scene.display.workArea;
+        launcherPositions[scene.display.id] = { x: x - area.x, y: y - area.y };
+        try { savePreferences(); } catch (error) { console.warn('Launcher position:', error.message); }
+      }
+    }
+    if (phase === 'finish' || phase === 'cancel') scene.launcherDrag = undefined;
+  });
+  ipcMain.on('toolbar-bounds', (event, bounds) => {
+    if (event.sender !== activeScene?.snowfall.webContents) return;
+    activeScene.toolbarBounds = bounds;
+    updateMouseCapture();
   });
   ipcMain.on('snow-drag', (event, dragging) => {
     if (event.sender !== activeScene?.snowfall.webContents) return;
@@ -375,9 +488,11 @@ app.whenReady().then(() => {
   });
   reconcileDisplays();
   createTray();
+  refreshIconAccess();
   trackWindows();
   startWeatherEvents();
   inputTimer = setInterval(() => { if (playing) updateMouseCapture(); }, 25);
+  app.on('activate', refreshIconAccess);
   for (const event of ['display-added', 'display-removed', 'display-metrics-changed']) {
     screen.on(event, reconcileDisplays);
   }
