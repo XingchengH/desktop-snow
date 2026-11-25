@@ -5,6 +5,10 @@ const ctx = canvas.getContext('2d');
 const hint = document.querySelector('output');
 const toolbar = document.querySelector('header');
 let launcherAnchor;
+let toolbarBounds;
+let hoverPoint;
+let movingProp;
+let treeDrag;
 
 function placeToolbar() {
   if (!play || !launcherAnchor) return;
@@ -20,7 +24,8 @@ function placeToolbar() {
   toolbar.style.top = `${panelY}px`;
   hint.style.left = `${panelX}px`;
   hint.style.top = `${above ? Math.max(top, panelY - 23) : panelY + h + 4}px`;
-  window.desktopSnow?.setToolbarBounds({ x: panelX, y: panelY, width: w, height: h });
+  toolbarBounds = { x: panelX, y: panelY, width: w, height: h };
+  window.desktopSnow?.setToolbarBounds(toolbarBounds);
 }
 const cell = 6;
 let width, height, snow, flakes, balls = [], carried, pointer, tool;
@@ -51,6 +56,48 @@ let steadyWindDirection = 0;
 let nextGust = 12_000 + Math.random() * 16_000, nextWindLift = 0;
 let warmingUntil = 0, weatherMessageUntil = 0;
 let trees = [];
+const displayId = new URLSearchParams(location.search).get('display');
+const sceneKey = displayId === null ? null : `desktop-snow:scene:${displayId}`;
+
+function saveScene() {
+  if (!sceneKey) return;
+  const figures = balls.filter(ball => ball.stacked && ball.base && !ball.base.anchor)
+    .map(ball => ({
+      x: ball.base.x / width, baseRadius: ball.base.r, radius: ball.r,
+      ...Object.fromEntries(Object.keys(outfits).map(part => [part, ball[part] ?? 0])),
+    }));
+  const planted = trees.filter(tree => !tree.anchor && tree.plantedAt !== undefined)
+    .map(({ x, preferred, size, seed, lighting }) => ({
+      preferred: Number.isFinite(x) ? x / width : preferred, size, seed, lighting,
+    }));
+  try { localStorage.setItem(sceneKey, JSON.stringify({ figures, planted })); }
+  catch (error) { console.warn('Snow scene could not be saved:', error.message); }
+}
+
+function restoreScene() {
+  if (!sceneKey) return;
+  try {
+    const { figures = [], planted = [] } = JSON.parse(localStorage.getItem(sceneKey) ?? '{}');
+    for (const figure of figures.slice(0, 30)) {
+      const { x, baseRadius, radius } = figure;
+      if (![x, baseRadius, radius].every(Number.isFinite) ||
+          x < 0 || x > 1 || radius < 8 || baseRadius < radius || baseRadius > 42) continue;
+      const base = { x: x * width, y: groundY() - baseRadius - 5, r: baseRadius, restored: true };
+      const head = { x: base.x, y: base.y - baseRadius - radius + 2, r: radius, stacked: true, base };
+      for (const [part, choices] of Object.entries(outfits)) {
+        if (Number.isInteger(figure[part]) && figure[part] >= 0 && figure[part] < choices.length - 1) {
+          head[part] = figure[part];
+        }
+      }
+      balls.push(base, head);
+    }
+    for (const tree of planted.slice(0, 8)) {
+      if (![tree.preferred, tree.size, tree.seed].every(Number.isFinite) || tree.size < 0.36 || tree.size > 1.38) continue;
+      trees.push({ ...tree, x: tree.preferred * width, checkAt: 0, plantedAt: performance.now() - 9000 });
+    }
+    syncDecorationTargets();
+  } catch (error) { console.warn('Snow scene could not be restored:', error.message); }
+}
 const weatherMessage = document.getElementById('weather');
 
 function startGust(now, strong = false) {
@@ -100,7 +147,11 @@ function clearTreeSpot(tree, x) {
   const halfWidth = 55 * tree.size;
   const top = floor - 146 * tree.size;
   if (!onGround(x - halfWidth) || !onGround(x + halfWidth) ||
-      x - halfWidth < 135 || Math.abs(x - width / 2) < 350 + halfWidth) return false;
+      x - halfWidth < 6 || x + halfWidth > width - 6) return false;
+  const blocks = [launcherAnchor && { ...launcherAnchor, width: launcherAnchor.size,
+    height: launcherAnchor.size }, play && toolbarBounds];
+  if (blocks.some(rect => rect && x + halfWidth > rect.x && x - halfWidth < rect.x + rect.width &&
+      floor > rect.y && top < rect.y + rect.height)) return false;
   if (ledges.some(rect => !rect.systemBar && x + halfWidth > rect.x &&
       x - halfWidth < rect.x + rect.width && floor > rect.y &&
       top < rect.y + rect.height)) return false;
@@ -241,6 +292,7 @@ function buildTreeArtwork(seed) {
 }
 
 function drawTree(tree, now) {
+  tree.hit = undefined;
   const edge = tree.anchor && anchoredEdge(tree.anchor);
   if (tree.anchor) {
     if (!edge) return;
@@ -253,6 +305,7 @@ function drawTree(tree, now) {
     if (tree.x === undefined) return;
     if (tree.plantedAt === undefined) {
       tree.plantedAt = now;
+      saveScene();
       weatherMessage.textContent = '积雪里长出了一棵圣诞树';
       weatherMessageUntil = now + 5500;
       weatherMessage.hidden = false;
@@ -260,18 +313,61 @@ function drawTree(tree, now) {
   }
   const growth = 1 - (1 - Math.max(0, Math.min(1, (now - tree.plantedAt) / 9000))) ** 2;
   const x = tree.x;
+  const y = edge ? ledgeSurface(edge, x) : groundY() - snow[Math.floor(x / cell)] * 0.5;
+  tree.hit = { x: x - 43 * tree.size, y: y - 138 * tree.size * growth,
+    width: 86 * tree.size, height: 138 * tree.size * growth };
   ctx.save();
-  ctx.translate(x, edge ? ledgeSurface(edge, x) : groundY() - snow[Math.floor(x / cell)] * 0.5);
+  ctx.translate(x, y);
   ctx.scale(growth * tree.size, growth * tree.size);
   ctx.transform(1, 0, -wind / 2200, 1, 0, 0);
-  paintTree(tree.artwork ??= buildTreeArtwork(tree.seed), now);
+  paintTree(tree.artwork ??= buildTreeArtwork(tree.seed), now, tree.lighting);
   ctx.restore();
 }
 
-function paintTree({ artwork, lights, glow }, now) {
+function treeDrop(tree, x, y) {
+  const edge = playableLedge(x, y, true);
+  if (edge && fitsLedge(edge, x, 55 * tree.size, 146 * tree.size) &&
+      !trees.some(other => other !== tree && other.anchor?.id === edge.id &&
+        Math.abs(edge.x + other.anchor.offset - x) < 55 * (tree.size + other.size) + 12)) {
+    return { x, y: ledgeSurface(edge, x), anchor: { id: edge.id, offset: x - edge.x } };
+  }
+  if (y >= groundY() - 62 && y <= groundY() + 5) {
+    const originalSize = tree.size;
+    const size = [1, 0.85, 0.7, 0.55].map(scale => Math.max(0.36, originalSize * scale))
+      .find(candidate => {
+        tree.size = candidate;
+        return clearTreeSpot(tree, x);
+      });
+    tree.size = originalSize;
+    if (size) return { x, y: groundTop(x), size };
+  }
+}
+
+function updateTreeDrag(event) {
+  const { tree, startX, startY, offsetX, offsetY } = treeDrag;
+  treeDrag.moved ||= Math.hypot(event.offsetX - startX, event.offsetY - startY) >= 5;
+  if (!treeDrag.moved) return;
+  treeDrag.x = event.offsetX + offsetX;
+  treeDrag.y = event.offsetY + offsetY;
+  treeDrag.drop = treeDrop(tree, treeDrag.x, treeDrag.y);
+}
+
+function drawTreeDrag() {
+  if (!treeDrag?.moved) return;
+  const { tree, drop, x, y } = treeDrag;
+  ctx.save();
+  ctx.translate(drop?.x ?? x, drop?.y ?? y);
+  ctx.scale(drop?.size ?? tree.size, drop?.size ?? tree.size);
+  ctx.globalAlpha = drop ? 0.8 : 0.38;
+  ctx.drawImage((tree.artwork ??= buildTreeArtwork(tree.seed)).artwork, -56, -143, 112, 146);
+  ctx.restore();
+}
+
+function paintTree({ artwork, lights, glow }, now, lighting) {
   ctx.drawImage(artwork, -56, -143, 112, 146);
+  if (lighting === 'off') return;
   for (const light of lights) {
-    const brightness = reducedMotion.matches ? 0.78
+    const brightness = reducedMotion.matches || lighting === 'steady' ? 0.78
       : 0.68 + 0.26 * Math.sin(now / 1000 * light.speed + light.phase);
     ctx.globalAlpha = brightness;
     const { x, y, radius } = light;
@@ -385,17 +481,42 @@ function fitsLedge(edge, x, radius, objectHeight) {
       rect.y < edge.y && rect.y + rect.height > y - objectHeight);
 }
 
-function plantOnLedge(edge, x) {
-  if (trees.length >= 8) return '这块屏幕最多可以种八棵树。';
-  if (edgeTop(edge, x) - ledgeSurface(edge, x) < 1) return '等窗沿积一点雪再种树。';
-  const size = [0.48 + Math.random() * 0.34, 0.42, 0.36].find(scale =>
+function ledgeTreeSize(edge, x, preferred = 0.62) {
+  if (trees.length >= 8 || edgeTop(edge, x) - ledgeSurface(edge, x) < 1) return undefined;
+  return [preferred, 0.42, 0.36].find(scale =>
     fitsLedge(edge, x, 55 * scale, 146 * scale) &&
     !trees.some(tree => tree.anchor?.id === edge.id &&
       Math.abs(tree.anchor.offset - (x - edge.x)) < 55 * (tree.size + scale) + 12));
+}
+
+function plantOnLedge(edge, x) {
+  if (trees.length >= 8) return '这块屏幕最多可以种八棵树。';
+  if (edgeTop(edge, x) - ledgeSurface(edge, x) < 1) return '等窗沿积一点雪再种树。';
+  const size = ledgeTreeSize(edge, x);
   if (!size) return '这段窗沿空间不够，试试另一个位置。';
   trees.push({ x, size, anchor: { id: edge.id, offset: x - edge.x },
     seed: Math.floor(Math.random() * 2 ** 32), plantedAt: performance.now() });
   return '树正在窗沿长出来。';
+}
+
+function drawPlacementPreview() {
+  if (!play || !hoverPoint || (tool !== 'tree' && !carried)) return;
+  const { x, y } = hoverPoint;
+  const edge = playableLedge(x, y, Boolean(carried));
+  if (!edge) return;
+  const surface = ledgeSurface(edge, x);
+  if (carried) {
+    if (!fitsLedge(edge, x, carried.r, carried.r * 2)) return;
+    circle(x, surface - carried.r, carried.r, '#daf0ff65');
+    return;
+  }
+  const size = ledgeTreeSize(edge, x);
+  ctx.fillStyle = size ? '#abdcc58f' : '#ffa9a99c';
+  ctx.beginPath();
+  ctx.moveTo(x, surface - 130 * (size ?? 0.2));
+  ctx.lineTo(x - 42 * (size ?? 0.2), surface);
+  ctx.lineTo(x + 42 * (size ?? 0.2), surface);
+  ctx.fill();
 }
 
 function updateAnchoredBalls() {
@@ -567,8 +688,9 @@ function draw(now) {
   requestAnimationFrame(draw);
   if (document.hidden) return;
   // A little tolerance avoids dropping every third 60 Hz frame near the limit.
-  if (!play && frameTime !== undefined && now - frameTime < 46) return;
-  const dt = Math.min((now - (frameTime ?? now)) / 1000, 0.075);
+  const quiet = !play && intensity === 'paused' && !looseSnow.length && now >= warmingUntil;
+  if (!play && frameTime !== undefined && now - frameTime < (quiet ? 120 : 46)) return;
+  const dt = Math.min((now - (frameTime ?? now)) / 1000, quiet ? 0.13 : 0.075);
   frameTime = now;
   updateWind(now, dt);
   const warming = now < warmingUntil;
@@ -627,8 +749,11 @@ function draw(now) {
     ctx.fillStyle = '#e8f4fc';
     ctx.fill();
     for (const tree of trees) drawTree(tree, now);
+    drawTreeDrag();
+    if (play) syncDecorationTargets();
     updateAnchoredBalls();
     for (const ball of balls.concat(carried ?? [])) if (!ball.hidden) drawBall(ball);
+    drawPlacementPreview();
   }
 }
 
@@ -784,11 +909,17 @@ function decorationTargets() {
 }
 
 function syncDecorationTargets() {
-  const targets = decorationTargets().slice(0, 59);
+  const targets = [...trees.flatMap(tree => tree.hit ? [{
+    x: tree.hit.x + tree.hit.width / 2, y: tree.hit.y + tree.hit.height / 2,
+    radius: Math.max(10, tree.hit.height * 0.36),
+  }] : []), ...decorationTargets()].slice(0, 59);
   if (!wardrobe.hidden) {
     const { x, y, width, height } = wardrobe.getBoundingClientRect();
     targets.unshift({ x, y, width, height });
   }
+  const key = JSON.stringify(targets);
+  if (key === syncDecorationTargets.lastKey) return;
+  syncDecorationTargets.lastKey = key;
   window.desktopSnow?.setDecorationTargets?.(targets);
 }
 
@@ -800,6 +931,8 @@ function closeWardrobe() {
 
 function openWardrobe(ball) {
   dressedSnowman = ball;
+  document.querySelector('#wardrobe-title strong').textContent = '雪人换装';
+  wardrobe.setAttribute('aria-label', '雪人换装');
   const options = document.getElementById('outfits');
   options.replaceChildren();
   for (const [part, [label, ...choices]] of Object.entries(outfits)) {
@@ -815,6 +948,7 @@ function openWardrobe(ball) {
       button.setAttribute('aria-pressed', String((ball[part] ?? 0) === index));
       button.onclick = () => {
         ball[part] = index;
+        saveScene();
         for (const peer of row.querySelectorAll('button')) {
           peer.setAttribute('aria-pressed', String(peer === button));
         }
@@ -823,14 +957,86 @@ function openWardrobe(ball) {
     });
     options.append(row);
   }
+  const actions = document.createElement('div');
+  actions.className = 'outfit-row';
+  if (!ball.base?.anchor) addMoveButton(actions, '雪人', { ball });
+  const remove = document.createElement('button');
+  remove.textContent = '移除雪人';
+  remove.onclick = () => {
+    balls = balls.filter(item => item !== ball && item !== ball.base);
+    saveScene();
+    closeWardrobe();
+  };
+  actions.append(remove);
+  options.append(actions);
   wardrobe.hidden = false;
   wardrobe.style.left = `${Math.max(8, Math.min(ball.x - wardrobe.offsetWidth / 2, width - wardrobe.offsetWidth - 8))}px`;
   wardrobe.style.top = `${Math.max(8, Math.min(ball.y - ball.r - wardrobe.offsetHeight - 18, groundY() - 142 - wardrobe.offsetHeight))}px`;
   syncDecorationTargets();
 }
 
+function openTreeLights(tree) {
+  dressedSnowman = undefined;
+  document.querySelector('#wardrobe-title strong').textContent = '圣诞树灯饰';
+  wardrobe.setAttribute('aria-label', '圣诞树灯饰');
+  const options = document.getElementById('outfits');
+  options.replaceChildren();
+  const row = document.createElement('div');
+  row.className = 'outfit-row';
+  for (const [value, label] of [['twinkle', '微光闪烁'], ['steady', '常亮'], ['off', '关灯']]) {
+    const button = document.createElement('button');
+    button.textContent = label;
+    button.setAttribute('aria-pressed', String((tree.lighting ?? 'twinkle') === value));
+    button.onclick = () => { tree.lighting = value; saveScene(); openTreeLights(tree); };
+    row.append(button);
+  }
+  const remove = document.createElement('button');
+  const moveHint = document.createElement('span');
+  moveHint.textContent = '拖动树可移动';
+  moveHint.style.width = 'auto';
+  row.append(moveHint);
+  remove.textContent = '移除树';
+  remove.onclick = () => { trees = trees.filter(item => item !== tree); saveScene(); closeWardrobe(); };
+  row.append(remove);
+  options.append(row);
+  wardrobe.hidden = false;
+  wardrobe.style.left = `${Math.max(8, Math.min(tree.x - wardrobe.offsetWidth / 2, width - wardrobe.offsetWidth - 8))}px`;
+  wardrobe.style.top = `${Math.max(8, tree.hit.y - wardrobe.offsetHeight - 12)}px`;
+  syncDecorationTargets();
+}
+
+function addMoveButton(row, label, prop) {
+  const button = document.createElement('button');
+  button.textContent = `移动${label}`;
+  button.onclick = () => {
+    closeWardrobe();
+    movingProp = prop;
+    hint.textContent = '点击底部雪带上的新位置。';
+  };
+  row.append(button);
+}
+
+function moveGroundProp(x) {
+  const { ball } = movingProp;
+  const { base } = ball;
+  if (!base || !onGround(x - base.r) || !onGround(x + base.r)) return false;
+  const y = groundY() - base.r - 5;
+  const top = y - base.r - 2 * ball.r;
+  if (ledges.some(rect => !rect.systemBar && rect.x < x + base.r &&
+    rect.x + rect.width > x - base.r && rect.y < groundY() && rect.y + rect.height > top)) return false;
+  base.x = ball.x = x;
+  base.y = y;
+  ball.y = y - base.r - ball.r + 2;
+  movingProp = undefined;
+  hint.textContent = '已移动。';
+  saveScene();
+  syncDecorationTargets();
+  return true;
+}
+
 function select(next) {
   tool = next;
+  movingProp = undefined;
   closeWardrobe();
   for (const name of ['shovel', 'roll', 'decorate', 'tree']) {
     document.getElementById(name).setAttribute('aria-pressed', name === tool);
@@ -864,6 +1070,8 @@ function select(next) {
     hint.hidden = !play;
     placeToolbar();
     if (!play) {
+      movingProp = undefined;
+      treeDrag = undefined;
       closeWardrobe();
       if (carried) {
         carried.anchor = undefined;
@@ -881,6 +1089,10 @@ function select(next) {
   window.desktopSnow?.onWindowEdges(edges => {
     dockSurface = edges.find(edge => edge.id === -1);
     dockEdgeY = dockSurface?.y;
+    for (const ball of balls) {
+      if (ball.restored) ball.y = groundY() - ball.r - 5;
+      if (ball.base?.restored) ball.y = ball.base.y - ball.base.r - ball.r + 2;
+    }
     document.documentElement.style.setProperty('--floor-inset', `${height - groundY()}px`);
     const now = performance.now();
     const previous = new Map(ledges.map(edge => [edge.id, edge]));
@@ -918,20 +1130,37 @@ function select(next) {
   document.getElementById('wardrobe-close').onclick = closeWardrobe;
   document.getElementById('close').onclick = () => window.desktopSnow?.leavePlayMode();
   document.getElementById('reset').onclick = () => {
+    movingProp = undefined;
     balls = [];
     closeWardrobe();
     looseSnow = [];
     warmingUntil = 0;
     weatherMessageUntil = 0;
     trees = [];
+    saveScene();
     for (const edge of ledges) edge.depth.fill(0);
     resize();
   };
   canvas.onpointerdown = event => {
     if (!play || event.button !== 0 || pointer !== undefined) return;
     const x = event.offsetX, y = event.offsetY;
-    const edge = playableLedge(x, y);
     const onSnowbank = onGround(x) && y >= groundY() - 62 && y < groundY();
+    if (movingProp) {
+      if (!onSnowbank || !moveGroundProp(x)) hint.textContent = '这里放不下，请点另一段底部雪带。';
+      return;
+    }
+    const clickedTree = trees.findLast(({ hit }) => hit && x >= hit.x && x <= hit.x + hit.width &&
+      y >= hit.y && y <= hit.y + hit.height);
+    if (clickedTree) {
+      closeWardrobe();
+      pointer = event.pointerId;
+      treeDrag = { tree: clickedTree, startX: x, startY: y,
+        offsetX: clickedTree.x - x, offsetY: clickedTree.hit.y + clickedTree.hit.height - y };
+      canvas.setPointerCapture(pointer);
+      window.desktopSnow?.setDragging(true);
+      return;
+    }
+    const edge = playableLedge(x, y);
     if (tool === 'tree') {
       if (edge) hint.textContent = plantOnLedge(edge, x);
       else if (onSnowbank) weatherEvent('tree');
@@ -991,10 +1220,34 @@ function select(next) {
     if (carried) Object.assign(carried, { x, y });
   }
   canvas.onpointermove = event => {
-    if (event.pointerId === pointer) followDrag(event);
+    hoverPoint = { x: event.offsetX, y: event.offsetY };
+    if (event.pointerId !== pointer) return;
+    if (treeDrag) updateTreeDrag(event);
+    else followDrag(event);
   };
+  canvas.onpointerleave = () => { hoverPoint = undefined; };
   canvas.onpointerup = canvas.onpointercancel = canvas.onlostpointercapture = event => {
     if (event.pointerId !== pointer) return;
+    if (treeDrag) {
+      const released = event.type === 'pointerup';
+      if (released) updateTreeDrag(event);
+      const { tree, moved, drop } = treeDrag;
+      treeDrag = undefined;
+      pointer = undefined;
+      window.desktopSnow?.setDragging(false);
+      if (!released) return;
+      if (!moved && tree.hit) openTreeLights(tree);
+      if (moved && drop) {
+        tree.x = drop.x;
+        tree.preferred = drop.x / width;
+        tree.anchor = drop.anchor;
+        tree.size = drop.size ?? tree.size;
+        tree.checkAt = 0;
+        hint.textContent = '树已移动。';
+        saveScene();
+      } else if (moved) hint.textContent = '这个位置放不下，树留在原处。';
+      return;
+    }
     if (event.type === 'pointerup') followDrag(event);
     pointer = undefined;
     window.desktopSnow?.setDragging(false);
@@ -1026,6 +1279,7 @@ function select(next) {
     carried = undefined;
     updateAnchoredBalls();
     syncDecorationTargets();
+    saveScene();
   };
 }
 
@@ -1042,6 +1296,7 @@ intensityControl.addEventListener('click', () => {
 });
 reducedMotion.addEventListener('change', syncSnowfall);
 resize();
+restoreScene();
 if (new URLSearchParams(location.search).has('demo')) {
   document.body.style.background = 'linear-gradient(#101e32, #25465b)';
   function preview(now) {

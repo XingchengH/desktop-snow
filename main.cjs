@@ -56,6 +56,9 @@ function updateMouseCapture() {
   const { bounds, workArea } = display;
   const floor = snowFloor(display);
   const overlay = snowfall.getBounds();
+  const icon = activeScene.launcher?.getBounds();
+  const overIcon = icon && cursor.x >= icon.x && cursor.x < icon.x + icon.width &&
+    cursor.y >= icon.y && cursor.y < icon.y + icon.height;
   const panel = activeScene.toolbarBounds;
   const localX = cursor.x - overlay.x, localY = cursor.y - overlay.y;
   const toolbar = panel && localX >= panel.x && localX < panel.x + panel.width &&
@@ -75,7 +78,8 @@ function updateMouseCapture() {
   });
   const onDisplay = cursor.x >= bounds.x && cursor.x < bounds.x + bounds.width &&
     cursor.y >= bounds.y && cursor.y < bounds.y + bounds.height;
-  const capture = playing && (draggingSnow || (onDisplay && (toolbar || snowbank || decoration || windowLedge)));
+  const capture = playing && (draggingSnow || (!overIcon && onDisplay &&
+    (toolbar || snowbank || decoration || windowLedge)));
   if (capture !== capturesMouse) {
     capturesMouse = capture;
     snowfall.setIgnoreMouseEvents(!capture);
@@ -193,6 +197,7 @@ function createLauncher(scene) {
     focusable: false, acceptFirstMouse: true, hasShadow: false,
     webPreferences: { preload: path.join(__dirname, 'preload.cjs') },
   });
+  launcher.setAlwaysOnTop(true, 'floating', 1);
   launcher.once('ready-to-show', () => {
     launcher.showInactive();
     launcher.moveTop();
@@ -401,7 +406,7 @@ function createScene(display) {
     sendSceneEdges(scene);
     sendLauncherAnchor(scene);
   });
-  snowfall.loadFile('snow.html');
+  snowfall.loadFile('snow.html', { query: { display: String(display.id) } });
   scene.launcher = createLauncher(scene);
   return scene;
 }
